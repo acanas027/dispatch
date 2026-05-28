@@ -24,33 +24,24 @@ from pypdf import PdfReader, PdfWriter
 SHEET_NAME = "Outbound"
 START_ROW = 4
 
-# The code only uses A:D to detect the actual board table.
 TABLE_MIN_COL = 1
 TABLE_MAX_COL = 4
 
-# Only copy/style the real board columns.
-# A:N = 1:14. This prevents Python from touching S:T.
 BOARD_MIN_COL = 1
 BOARD_MAX_COL = 14
 
-# Clear generated values from S:T so TT4 only shows in column I.
-CLEAR_EXTRA_OUTPUT_COLS = [19, 20]  # S, T
+CLEAR_EXTRA_OUTPUT_COLS = [19, 20]
 
-# Template rows.
-# Row 4 = day row format.
-# Row 5 = load row format/formulas.
 TEMPLATE_DAY_ROW = START_ROW
 TEMPLATE_LOAD_ROW = START_ROW + 1
 
-# Default board columns
-COL_LOAD_OR_DAY = 1       # A
-COL_CUSTOMER = 2          # B
-COL_CARRIER_DEFAULT = 3   # C
-COL_TIME = 4              # D
-COL_CASES_DEFAULT = 6     # F
-COL_TT4 = 9               # I
+COL_LOAD_OR_DAY = 1
+COL_CUSTOMER = 2
+COL_CARRIER_DEFAULT = 3
+COL_TIME = 4
+COL_CASES_DEFAULT = 6
+COL_TT4 = 9
 
-# Appointment Excel headers
 APPT_LOAD_REF_HEADER = "Load Reference"
 APPT_LOAD_TYPE_HEADER = "Load Type"
 APPT_CARRIER_HEADER = "Carrier Company"
@@ -381,10 +372,6 @@ def extract_uploaded_manifest_files(uploaded_files, workdir):
 
 
 def build_matched_packet(uploaded_files):
-    """
-    Takes the two MG report uploads, identifies loading and shipping manifests,
-    matches them by load number, and returns a matched PDF packet as bytes.
-    """
     with tempfile.TemporaryDirectory() as workdir:
         pdf_files = extract_uploaded_manifest_files(uploaded_files, workdir)
 
@@ -589,12 +576,18 @@ def build_records_from_appointments(pdf_records: list[dict], appointment_lookup:
                     break
 
             if exact_pdf_match:
+                _, pdf_date, pdf_time = get_record_match_key(exact_pdf_match)
+
                 record = exact_pdf_match.copy()
 
                 record["Load"] = appointment_load
                 record["Pickup Date"] = appt_date
                 record["Pickup Time"] = appt_time
                 record["Pickup DateTime"] = f"{appt_date} {appt_time}"
+                record["PDF Date"] = pdf_date
+                record["PDF Time"] = pdf_time
+                record["Appointment Date"] = appt_date
+                record["Appointment Time"] = appt_time
                 record["Load Type"] = appointment.get("Load Type", "")
                 record["Carrier"] = appointment.get("Carrier", "")
                 record["Cases"] = parse_number(exact_pdf_match.get("Cases", 0))
@@ -613,9 +606,17 @@ def build_records_from_appointments(pdf_records: list[dict], appointment_lookup:
 
                 for pdf_record in pdf_matches_for_load:
                     _, pdf_date, pdf_time = get_record_match_key(pdf_record)
-                    pdf_dates.append(pdf_date)
-                    pdf_times.append(pdf_time)
+
+                    if pdf_date and pdf_date not in pdf_dates:
+                        pdf_dates.append(pdf_date)
+
+                    if pdf_time and pdf_time not in pdf_times:
+                        pdf_times.append(pdf_time)
+
                     pdf_cases_total += parse_number(pdf_record.get("Cases", 0))
+
+                pdf_date_display = " / ".join(pdf_dates)
+                pdf_time_display = " / ".join(pdf_times)
 
                 record = first_pdf_record.copy()
 
@@ -623,11 +624,18 @@ def build_records_from_appointments(pdf_records: list[dict], appointment_lookup:
                 record["Pickup Date"] = appt_date
                 record["Pickup Time"] = appt_time
                 record["Pickup DateTime"] = f"{appt_date} {appt_time}"
+                record["PDF Date"] = pdf_date_display
+                record["PDF Time"] = pdf_time_display
+                record["Appointment Date"] = appt_date
+                record["Appointment Time"] = appt_time
                 record["Load Type"] = appointment.get("Load Type", "")
                 record["Carrier"] = appointment.get("Carrier", "")
                 record["Cases"] = pdf_cases_total
                 record["Appointment Match"] = "Date/Time Mismatch"
-                record["Report Match Status"] = "Load found in PDF, but date/time did not match"
+                record["Report Match Status"] = (
+                    f"PDF says {pdf_date_display} {pdf_time_display}; "
+                    f"Appointment says {appt_date} {appt_time}"
+                )
                 record["Source"] = "New"
 
                 output_records.append(record)
@@ -636,8 +644,8 @@ def build_records_from_appointments(pdf_records: list[dict], appointment_lookup:
                     "Load": appointment_load,
                     "Appointment Date": appt_date,
                     "Appointment Time": appt_time,
-                    "PDF Date": " / ".join(pdf_dates),
-                    "PDF Time": " / ".join(pdf_times),
+                    "PDF Date": pdf_date_display,
+                    "PDF Time": pdf_time_display,
                     "PDF Cases Counted": pdf_cases_total,
                     "Reason": "Load number found in PDF, but date/time does not match"
                 })
@@ -651,6 +659,10 @@ def build_records_from_appointments(pdf_records: list[dict], appointment_lookup:
                     "Pickup DateTime": f"{appt_date} {appt_time}",
                     "Pickup Date": appt_date,
                     "Pickup Time": appt_time,
+                    "PDF Date": "",
+                    "PDF Time": "",
+                    "Appointment Date": appt_date,
+                    "Appointment Time": appt_time,
                     "Cases": 0,
                     "Is Canada": False,
                     "Raw Text": "",
@@ -1408,6 +1420,8 @@ def parse_manifest_pdf(pdf_bytes: bytes) -> tuple[list[dict], list[dict]]:
             "Pickup DateTime": full_datetime,
             "Pickup Date": date_text,
             "Pickup Time": time_text,
+            "PDF Date": date_text,
+            "PDF Time": time_text,
             "Cases": cases,
             "Is Canada": is_canadian_load(combined_text),
             "Raw Text": combined_text,
@@ -1538,6 +1552,10 @@ def read_existing_board_records(ws, start_row: int, board_columns: dict) -> tupl
                 "Pickup DateTime": pickup_datetime,
                 "Pickup Date": current_date,
                 "Pickup Time": pickup_time,
+                "PDF Date": "",
+                "PDF Time": "",
+                "Appointment Date": current_date,
+                "Appointment Time": pickup_time,
                 "Cases": 0,
                 "TT4": clean_spaces(ws.cell(row, tt4_col).value),
                 "Source": "Existing",
@@ -2003,7 +2021,11 @@ if mg_files and excel_board_file and appointments_file:
                         "Customer": record.get("Customer", ""),
                         "Load Type": record.get("Load Type", ""),
                         "Carrier": record.get("Carrier", ""),
-                        "Time": record.get("Pickup Time", ""),
+                        "Appointment Date": record.get("Appointment Date", ""),
+                        "Appointment Time": record.get("Appointment Time", ""),
+                        "PDF Date": record.get("PDF Date", ""),
+                        "PDF Time": record.get("PDF Time", ""),
+                        "Time Used on Board": record.get("Pickup Time", ""),
                         "TT4": record.get("TT4", ""),
                         "Appointment Match": record.get("Appointment Match", ""),
                         "Report Match Status": record.get("Report Match Status", ""),
@@ -2043,7 +2065,11 @@ if mg_files and excel_board_file and appointments_file:
                     "Customer": record.get("Customer", ""),
                     "Load Type": record.get("Load Type", ""),
                     "Carrier": record.get("Carrier", ""),
-                    "Time": record.get("Pickup Time", ""),
+                    "Appointment Date": record.get("Appointment Date", ""),
+                    "Appointment Time": record.get("Appointment Time", ""),
+                    "PDF Date": record.get("PDF Date", ""),
+                    "PDF Time": record.get("PDF Time", ""),
+                    "Time Used on Board": record.get("Pickup Time", ""),
                     "TT4": record.get("TT4", ""),
                     "Report Match Status": record.get("Report Match Status", ""),
                 })
