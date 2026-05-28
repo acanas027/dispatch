@@ -198,6 +198,46 @@ def clear_range_values(ws, start_row, end_row, columns):
             ws.cell(row, col).value = None
 
 
+def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
+    """
+    Accepts a Streamlit UploadedFile that is either a .pdf or a .zip.
+    - If PDF: returns its bytes directly.
+    - If ZIP: extracts all PDFs inside, merges them in filename order,
+      and returns the combined bytes. Raises if no PDF is found.
+    """
+    raw = uploaded_file.read()
+
+    if uploaded_file.name.lower().endswith(".pdf"):
+        return raw
+
+    # It's a ZIP — find and merge all PDFs inside
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        pdf_names = sorted(
+            name for name in z.namelist()
+            if name.lower().endswith(".pdf")
+            and not os.path.basename(name).startswith("__MACOSX")
+            and not os.path.basename(name).startswith(".")
+        )
+
+        if not pdf_names:
+            raise ValueError(f"No PDF files found inside {uploaded_file.name}.")
+
+        if len(pdf_names) == 1:
+            return z.read(pdf_names[0])
+
+        # Merge multiple PDFs from the zip into one
+        writer = PdfWriter()
+        for name in pdf_names:
+            reader = PdfReader(io.BytesIO(z.read(name)))
+            for page in reader.pages:
+                writer.add_page(page)
+
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
+        return out.read()
+
+
 # ============================================================
 # PDF MANIFEST MATCHER (from report.py)
 # ============================================================
@@ -1058,15 +1098,15 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     loading_manifest_file = st.file_uploader(
-        "Loading Manifest PDF",
-        type=["pdf"],
+        "Loading Manifest — PDF or ZIP",
+        type=["pdf", "zip"],
         key="loading_manifest"
     )
 
 with col_right:
     shipping_manifest_file = st.file_uploader(
-        "Shipping Manifest PDF",
-        type=["pdf"],
+        "Shipping Manifest — PDF or ZIP",
+        type=["pdf", "zip"],
         key="shipping_manifest"
     )
 
@@ -1110,8 +1150,8 @@ if not all_required:
 if all_required and st.button("Build Matched PDF + Populated Short Sheet", type="primary"):
 
     try:
-        loading_bytes  = loading_manifest_file.read()
-        shipping_bytes = shipping_manifest_file.read()
+        loading_bytes  = extract_pdf_bytes_from_upload(loading_manifest_file)
+        shipping_bytes = extract_pdf_bytes_from_upload(shipping_manifest_file)
         template_bytes = template_file.read()
         opendock_bytes = opendock_file.read()
 
