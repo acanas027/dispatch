@@ -1,3 +1,5 @@
+Dispatch Auto app
+
 import os
 import re
 import io
@@ -1081,12 +1083,12 @@ def populate_template(template_bytes: bytes, opendock_records: list[dict], mg_re
 # STREAMLIT APP
 # ============================================================
 
-st.set_page_config(page_title="KS Short Sheet Builder", layout="wide")
+st.set_page_config(page_title="Dispatch Builder", layout="wide")
 
-st.title("KS Short Sheet Builder")
+st.title("Dispatch Builder")
 
 st.write(
-    "Upload the Loading Manifest PDF, Shipping Manifest PDF, the KS SS template, "
+    "Upload the Loading Manifest PDF, Shipping Manifest PDF, the dispatch template, "
     "and the Opendock report. The app will match and merge the two manifests, then "
     "populate the OPENDOCK, MG REPORT, DISPATCH SHEET, and MATCH REPORT tabs."
 )
@@ -1168,7 +1170,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
 
         # Download button for the matched PDF (always available after build)
         st.download_button(
-            label="⬇️  Download Matched Manifest PDF",
+            label="Download Matched Manifest PDF",
             data=matched_pdf_bytes,
             file_name="Matched_Manifest_Packet.pdf",
             mime="application/pdf",
@@ -1192,13 +1194,13 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             mg_records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
             mg_summary["mg_unique_loads"] = len(mg_records)
 
-        # ── Step C: Parse Opendock ────────────────────────────────────────────
+        # Step C: Parse Opendock 
         with st.spinner("Reading Opendock report…"):
             opendock_records, opendock_summary = parse_opendock_excel(opendock_bytes)
 
         st.success("All files loaded successfully.")
 
-        # ── Metrics ───────────────────────────────────────────────────────────
+        # Metrics 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Opendock Outbound Rows",  opendock_summary["outbound_rows_loaded"])
         c2.metric("Inbound Rows Skipped",    opendock_summary["inbound_rows_skipped"])
@@ -1239,7 +1241,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
 
         # ── Final download ────────────────────────────────────────────────────
         st.download_button(
-            label="⬇️  Download Populated KS SS Template",
+            label=" Download Populated Dispatch Template",
             data=populated_file,
             file_name=OUTPUT_FILE_NAME,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
