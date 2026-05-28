@@ -12,7 +12,7 @@ from collections import defaultdict
 import streamlit as st
 import fitz  # PyMuPDF
 import openpyxl
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader, PdfWriter
 
@@ -21,99 +21,34 @@ from pypdf import PdfReader, PdfWriter
 # SETTINGS
 # ============================================================
 
-SHEET_NAME = "Outbound"
-START_ROW = 4
-
-TABLE_MIN_COL = 1
-TABLE_MAX_COL = 4
-
-BOARD_MIN_COL = 1
-BOARD_MAX_COL = 14
-
-CLEAR_EXTRA_OUTPUT_COLS = [19, 20]
-
-TEMPLATE_DAY_ROW = START_ROW
-TEMPLATE_LOAD_ROW = START_ROW + 1
-
-COL_LOAD_OR_DAY = 1
-COL_CUSTOMER = 2
-COL_CARRIER_DEFAULT = 3
-COL_TIME = 4
-COL_CASES_DEFAULT = 6
-COL_TT4 = 9
-
-APPT_LOAD_REF_HEADER = "Load Reference"
-APPT_LOAD_TYPE_HEADER = "Load Type"
-APPT_CARRIER_HEADER = "Carrier Company"
-
-APPT_DATE_HEADERS = [
-    "Appointment Date",
-    "Appt Date",
-    "Pickup Date",
-    "PU Date",
-    "Date",
-    "Start Date",
-]
-
-APPT_TIME_HEADERS = [
-    "Appointment Time",
-    "Appt Time",
-    "Pickup Time",
-    "PU Time",
-    "Time",
-    "Start Time",
-]
-
-APPT_DATETIME_HEADERS = [
-    "Appointment Date Time",
-    "Appointment Datetime",
-    "Appt Date Time",
-    "Appt Datetime",
-    "Pickup Date Time",
-    "PU Date Time",
-    "Scheduled Time",
-    "Scheduled Date Time",
-    "Start Date Time",
-]
-
-TT4_FOR_CANADA = True
-
-TT4_CUSTOMER_KEYWORDS = [
-    # "LOBLAWS",
-    # "SOBEYS",
-    # "COSTCO",
-]
-
-OUTPUT_FILE_NAME = "Updated_EXCEL_BOARD.xlsx"
+OUTPUT_FILE_NAME = "Populated_Template.xlsx"
 MATCHED_PDF_FILE_NAME = "Matched_Manifest_Packet.pdf"
 
+OPENDOCK_SHEET = "OPENDOCK"
+MG_REPORT_SHEET = "MG REPORT"
+DISPATCH_SHEET = "DISPATCH SHEET"
+
+OPENDOCK_START_ROW = 2
+MG_REPORT_START_ROW = 2
+
+MAX_OPENDOCK_ROWS = 1000
+MAX_MG_REPORT_ROWS = 1000
+
 
 # ============================================================
-# BASIC CLEANING
+# BASIC HELPERS
 # ============================================================
 
-def clean_spaces(value: str) -> str:
+def clean_spaces(value) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def parse_number(value):
+def normalize_header(value) -> str:
     if value is None:
-        return 0
-
-    value = str(value).replace(",", "").strip()
-
-    if not value:
-        return 0
-
-    try:
-        number = float(value)
-        if number.is_integer():
-            return int(number)
-        return number
-    except ValueError:
-        return 0
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(value).strip().upper())
 
 
 def normalize_load_number(value) -> str:
@@ -125,85 +60,28 @@ def normalize_load_number(value) -> str:
     text = re.sub(r"^LD", "", text, flags=re.IGNORECASE)
     text = re.sub(r"[^0-9]", "", text)
 
-    if text.isdigit():
-        return text
-
-    return ""
+    return text if text.isdigit() else ""
 
 
-def normalize_header(value) -> str:
+def parse_number(value):
     if value is None:
-        return ""
+        return 0
 
-    return re.sub(r"[^A-Z0-9]", "", str(value).strip().upper())
+    text = str(value).replace(",", "").strip()
 
+    if not text:
+        return 0
 
-def parse_sort_datetime(value: str):
     try:
-        return datetime.strptime(value, "%m/%d/%Y %H:%M")
+        number = float(text)
+        if number.is_integer():
+            return int(number)
+        return number
     except Exception:
-        return datetime.max
+        return 0
 
 
-def parse_date_any(value: str) -> str:
-    if not value:
-        return ""
-
-    text = str(value).strip()
-
-    for fmt in ["%m/%d/%Y", "%m/%d/%y"]:
-        try:
-            dt = datetime.strptime(text, fmt)
-            return dt.strftime("%m/%d/%Y")
-        except Exception:
-            pass
-
-    return ""
-
-
-def format_date_short(date_text: str) -> str:
-    try:
-        dt = datetime.strptime(date_text, "%m/%d/%Y")
-        return dt.strftime("%m/%d/%y")
-    except Exception:
-        return date_text
-
-
-def get_day_name(date_text: str) -> str:
-    try:
-        dt = datetime.strptime(date_text, "%m/%d/%Y")
-        return dt.strftime("%A")
-    except Exception:
-        return ""
-
-
-def format_time_only(time_text: str) -> str:
-    if not time_text:
-        return ""
-
-    text = str(time_text).strip()
-
-    match = re.search(r"(\d{1,2}):(\d{2})", text)
-    if match:
-        return f"{int(match.group(1)):02d}:{match.group(2)}"
-
-    return text
-
-
-def build_datetime_from_date_time(date_text: str, time_text: str) -> str:
-    date_text = parse_date_any(date_text) or date_text
-    time_text = format_time_only(time_text)
-
-    if not date_text:
-        return ""
-
-    if not time_text:
-        time_text = "23:59"
-
-    return f"{date_text} {time_text}"
-
-
-def normalize_date_for_match(value) -> str:
+def normalize_date(value) -> str:
     if value is None:
         return ""
 
@@ -218,9 +96,9 @@ def normalize_date_for_match(value) -> str:
     if not text:
         return ""
 
-    date_match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", text)
-    if date_match:
-        text = date_match.group(1)
+    match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", text)
+    if match:
+        text = match.group(1)
 
     for fmt in ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]:
         try:
@@ -232,7 +110,7 @@ def normalize_date_for_match(value) -> str:
     return ""
 
 
-def normalize_time_for_match(value) -> str:
+def normalize_time(value) -> str:
     if value is None:
         return ""
 
@@ -253,11 +131,9 @@ def normalize_time_for_match(value) -> str:
     if not text:
         return ""
 
-    time_match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
-    if time_match and "AM" not in text.upper() and "PM" not in text.upper():
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2))
-        return f"{hour:02d}:{minute:02d}"
+    match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    if match and "AM" not in text.upper() and "PM" not in text.upper():
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
 
     compact_text = text.upper().replace(" ", "")
 
@@ -270,12 +146,67 @@ def normalize_time_for_match(value) -> str:
     return ""
 
 
-def get_record_match_key(record: dict) -> tuple[str, str, str]:
-    load_number = normalize_load_number(record.get("Load", ""))
-    pickup_date = normalize_date_for_match(record.get("Pickup Date", ""))
-    pickup_time = normalize_time_for_match(record.get("Pickup Time", ""))
+def sort_datetime_key(record):
+    date_text = record.get("appt_date", "")
+    time_text = record.get("appt_time", "")
 
-    return load_number, pickup_date, pickup_time
+    if not date_text:
+        return datetime.max
+
+    if not time_text:
+        time_text = "23:59"
+
+    try:
+        return datetime.strptime(f"{date_text} {time_text}", "%m/%d/%Y %H:%M")
+    except Exception:
+        return datetime.max
+
+
+def get_header_map(ws, header_row=1):
+    headers = {}
+
+    for col in range(1, ws.max_column + 1):
+        value = ws.cell(header_row, col).value
+
+        if value not in [None, ""]:
+            headers[normalize_header(value)] = col
+
+    return headers
+
+
+def find_col(header_map, possible_names, default_col=None):
+    for name in possible_names:
+        key = normalize_header(name)
+        if key in header_map:
+            return header_map[key]
+
+    return default_col
+
+
+def copy_cell_style(source_cell, target_cell):
+    if source_cell.has_style:
+        target_cell.font = copy(source_cell.font)
+        target_cell.fill = copy(source_cell.fill)
+        target_cell.border = copy(source_cell.border)
+        target_cell.alignment = copy(source_cell.alignment)
+        target_cell.number_format = source_cell.number_format
+        target_cell.protection = copy(source_cell.protection)
+
+
+def copy_row_format(ws, source_row, target_row, max_col):
+    ws.row_dimensions[target_row].height = ws.row_dimensions[source_row].height
+
+    for col in range(1, max_col + 1):
+        source_cell = ws.cell(source_row, col)
+        target_cell = ws.cell(target_row, col)
+
+        copy_cell_style(source_cell, target_cell)
+
+
+def clear_range_values(ws, start_row, end_row, columns):
+    for row in range(start_row, end_row + 1):
+        for col in columns:
+            ws.cell(row, col).value = None
 
 
 # ============================================================
@@ -454,343 +385,105 @@ def build_matched_packet(uploaded_files):
 
 
 # ============================================================
-# APPOINTMENT EXCEL PARSER
+# OPENDOCK PARSER
 # ============================================================
 
-def find_header_column(ws, header_name: str, header_row: int = 1) -> int | None:
-    target = normalize_header(header_name)
-
-    for col in range(1, ws.max_column + 1):
-        value = ws.cell(header_row, col).value
-
-        if normalize_header(value) == target:
-            return col
-
-    return None
-
-
-def find_first_header_column(ws, possible_headers: list[str], header_row: int = 1) -> int | None:
-    for header in possible_headers:
-        col = find_header_column(ws, header, header_row)
-        if col:
-            return col
-    return None
-
-
-def parse_appointments_excel(appointments_bytes: bytes) -> dict:
-    wb = openpyxl.load_workbook(io.BytesIO(appointments_bytes), data_only=True)
+def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(opendock_bytes), data_only=True)
 
     if "Appointments" in wb.sheetnames:
         ws = wb["Appointments"]
     else:
         ws = wb[wb.sheetnames[0]]
 
-    load_ref_col = find_header_column(ws, APPT_LOAD_REF_HEADER)
-    load_type_col = find_header_column(ws, APPT_LOAD_TYPE_HEADER)
-    carrier_col = find_header_column(ws, APPT_CARRIER_HEADER)
+    headers = get_header_map(ws, 1)
 
-    datetime_col = find_first_header_column(ws, APPT_DATETIME_HEADERS)
-    date_col = find_first_header_column(ws, APPT_DATE_HEADERS)
-    time_col = find_first_header_column(ws, APPT_TIME_HEADERS)
+    load_col = find_col(headers, ["Load Reference", "Load", "Load #"])
+    appt_date_col = find_col(headers, ["Appt Date", "Appointment Date", "Date", "Pickup Date"])
+    appt_time_col = find_col(headers, ["Appt Time", "Appointment Time", "Time", "Pickup Time"])
+    arrival_date_col = find_col(headers, ["Arrival Date"])
+    arrival_time_col = find_col(headers, ["Arrival Time"])
+    departure_date_col = find_col(headers, ["Departure Date"])
+    departure_time_col = find_col(headers, ["Departure Time"])
+    status_col = find_col(headers, ["Status"])
+    carrier_col = find_col(headers, ["Carrier Company", "Carrier"])
+    load_type_col = find_col(headers, ["Load Type", "Type"])
+    dock_col = find_col(headers, ["Dock", "Door"])
+    direction_col = find_col(headers, ["Direction"])
 
     missing = []
 
-    if not load_ref_col:
-        missing.append(APPT_LOAD_REF_HEADER)
+    if not load_col:
+        missing.append("Load Reference")
 
-    if not load_type_col:
-        missing.append(APPT_LOAD_TYPE_HEADER)
+    if not appt_date_col:
+        missing.append("Appt Date")
+
+    if not appt_time_col:
+        missing.append("Appt Time")
 
     if not carrier_col:
-        missing.append(APPT_CARRIER_HEADER)
-
-    if not datetime_col and not date_col:
-        missing.append("Appointment Date / Pickup Date")
-
-    if not datetime_col and not time_col:
-        missing.append("Appointment Time / Pickup Time")
+        missing.append("Carrier Company")
 
     if missing:
-        raise ValueError(
-            "The appointments Excel is missing these headers: "
-            + ", ".join(missing)
-        )
+        raise ValueError("The Opendock report is missing these columns: " + ", ".join(missing))
 
-    lookup = defaultdict(list)
+    records = []
+    skipped_inbound = []
+    duplicate_tracker = defaultdict(int)
 
     for row in range(2, ws.max_row + 1):
-        load_ref = ws.cell(row, load_ref_col).value
-        load_number = normalize_load_number(load_ref)
+        load_number = normalize_load_number(ws.cell(row, load_col).value)
 
         if not load_number:
             continue
 
-        load_type = clean_spaces(ws.cell(row, load_type_col).value)
-        carrier = clean_spaces(ws.cell(row, carrier_col).value)
+        direction = clean_spaces(ws.cell(row, direction_col).value) if direction_col else ""
 
-        if datetime_col:
-            datetime_value = ws.cell(row, datetime_col).value
-            pickup_date = normalize_date_for_match(datetime_value)
-            pickup_time = normalize_time_for_match(datetime_value)
-        else:
-            pickup_date = normalize_date_for_match(ws.cell(row, date_col).value)
-            pickup_time = normalize_time_for_match(ws.cell(row, time_col).value)
+        if direction and direction.upper() != "OUTBOUND":
+            skipped_inbound.append(load_number)
+            continue
 
-        lookup[load_number].append({
-            "Load Type": load_type,
-            "Carrier": carrier,
-            "Pickup Date": pickup_date,
-            "Pickup Time": pickup_time,
-            "Raw Load Reference": clean_spaces(load_ref),
-        })
+        duplicate_tracker[load_number] += 1
 
-    return dict(lookup)
+        record = {
+            "load": load_number,
+            "appt_date": normalize_date(ws.cell(row, appt_date_col).value),
+            "appt_time": normalize_time(ws.cell(row, appt_time_col).value),
+            "arrival_date": normalize_date(ws.cell(row, arrival_date_col).value) if arrival_date_col else "",
+            "arrival_time": normalize_time(ws.cell(row, arrival_time_col).value) if arrival_time_col else "",
+            "departure_date": normalize_date(ws.cell(row, departure_date_col).value) if departure_date_col else "",
+            "departure_time": normalize_time(ws.cell(row, departure_time_col).value) if departure_time_col else "",
+            "status": clean_spaces(ws.cell(row, status_col).value) if status_col else "",
+            "carrier": clean_spaces(ws.cell(row, carrier_col).value) if carrier_col else "",
+            "load_type": clean_spaces(ws.cell(row, load_type_col).value) if load_type_col else "",
+            "dock": clean_spaces(ws.cell(row, dock_col).value) if dock_col else "",
+            "direction": direction,
+        }
 
+        records.append(record)
 
-def build_records_from_appointments(pdf_records: list[dict], appointment_lookup: dict) -> tuple[list[dict], list[dict]]:
-    report_match_issues = []
-    output_records = []
+    records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
 
-    pdf_by_load = defaultdict(list)
+    duplicates = [
+        load for load, count in duplicate_tracker.items()
+        if count > 1
+    ]
 
-    for pdf_record in pdf_records:
-        pdf_load = normalize_load_number(pdf_record.get("Load", ""))
-
-        if pdf_load:
-            pdf_by_load[pdf_load].append(pdf_record)
-
-    for appointment_load, appointment_rows in appointment_lookup.items():
-        for appointment in appointment_rows:
-            appt_date = normalize_date_for_match(appointment.get("Pickup Date", ""))
-            appt_time = normalize_time_for_match(appointment.get("Pickup Time", ""))
-
-            pdf_matches_for_load = pdf_by_load.get(appointment_load, [])
-
-            exact_pdf_match = None
-
-            for pdf_record in pdf_matches_for_load:
-                _, pdf_date, pdf_time = get_record_match_key(pdf_record)
-
-                if pdf_date == appt_date and pdf_time == appt_time:
-                    exact_pdf_match = pdf_record
-                    break
-
-            if exact_pdf_match:
-                _, pdf_date, pdf_time = get_record_match_key(exact_pdf_match)
-
-                record = exact_pdf_match.copy()
-
-                record["Load"] = appointment_load
-                record["Pickup Date"] = appt_date
-                record["Pickup Time"] = appt_time
-                record["Pickup DateTime"] = f"{appt_date} {appt_time}"
-                record["PDF Date"] = pdf_date
-                record["PDF Time"] = pdf_time
-                record["Appointment Date"] = appt_date
-                record["Appointment Time"] = appt_time
-                record["Load Type"] = appointment.get("Load Type", "")
-                record["Carrier"] = appointment.get("Carrier", "")
-                record["Cases"] = parse_number(exact_pdf_match.get("Cases", 0))
-                record["Appointment Match"] = "Yes"
-                record["Report Match Status"] = "Matched"
-                record["Source"] = "New"
-
-                output_records.append(record)
-
-            elif pdf_matches_for_load:
-                first_pdf_record = pdf_matches_for_load[0].copy()
-
-                pdf_dates = []
-                pdf_times = []
-                pdf_cases_total = 0
-
-                for pdf_record in pdf_matches_for_load:
-                    _, pdf_date, pdf_time = get_record_match_key(pdf_record)
-
-                    if pdf_date and pdf_date not in pdf_dates:
-                        pdf_dates.append(pdf_date)
-
-                    if pdf_time and pdf_time not in pdf_times:
-                        pdf_times.append(pdf_time)
-
-                    pdf_cases_total += parse_number(pdf_record.get("Cases", 0))
-
-                pdf_date_display = " / ".join(pdf_dates)
-                pdf_time_display = " / ".join(pdf_times)
-
-                record = first_pdf_record.copy()
-
-                record["Load"] = appointment_load
-                record["Pickup Date"] = appt_date
-                record["Pickup Time"] = appt_time
-                record["Pickup DateTime"] = f"{appt_date} {appt_time}"
-                record["PDF Date"] = pdf_date_display
-                record["PDF Time"] = pdf_time_display
-                record["Appointment Date"] = appt_date
-                record["Appointment Time"] = appt_time
-                record["Load Type"] = appointment.get("Load Type", "")
-                record["Carrier"] = appointment.get("Carrier", "")
-                record["Cases"] = pdf_cases_total
-                record["Appointment Match"] = "Date/Time Mismatch"
-                record["Report Match Status"] = (
-                    f"PDF says {pdf_date_display} {pdf_time_display}; "
-                    f"Appointment says {appt_date} {appt_time}"
-                )
-                record["Source"] = "New"
-
-                output_records.append(record)
-
-                report_match_issues.append({
-                    "Load": appointment_load,
-                    "Appointment Date": appt_date,
-                    "Appointment Time": appt_time,
-                    "PDF Date": pdf_date_display,
-                    "PDF Time": pdf_time_display,
-                    "PDF Cases Counted": pdf_cases_total,
-                    "Reason": "Load number found in PDF, but date/time does not match"
-                })
-
-            else:
-                record = {
-                    "Load": appointment_load,
-                    "Customer": "",
-                    "Carrier": appointment.get("Carrier", ""),
-                    "Load Type": appointment.get("Load Type", ""),
-                    "Pickup DateTime": f"{appt_date} {appt_time}",
-                    "Pickup Date": appt_date,
-                    "Pickup Time": appt_time,
-                    "PDF Date": "",
-                    "PDF Time": "",
-                    "Appointment Date": appt_date,
-                    "Appointment Time": appt_time,
-                    "Cases": 0,
-                    "Is Canada": False,
-                    "Raw Text": "",
-                    "TT4": "",
-                    "Appointment Match": "No PDF Match",
-                    "Report Match Status": "Load not found in PDF",
-                    "Source": "New",
-                }
-
-                output_records.append(record)
-
-                report_match_issues.append({
-                    "Load": appointment_load,
-                    "Appointment Date": appt_date,
-                    "Appointment Time": appt_time,
-                    "PDF Date": "",
-                    "PDF Time": "",
-                    "PDF Cases Counted": 0,
-                    "Reason": "Load number was found in appointments Excel but not found in PDF"
-                })
-
-    output_records.sort(
-        key=lambda x: (
-            parse_sort_datetime(x.get("Pickup DateTime", "")),
-            x.get("Load", "")
-        )
-    )
-
-    return output_records, report_match_issues
-
-
-# ============================================================
-# BOARD COLUMN RESOLUTION
-# ============================================================
-
-def find_board_header_column(ws, accepted_headers: list[str], header_rows=(1, 2, 3)) -> int | None:
-    accepted = {normalize_header(x) for x in accepted_headers}
-
-    for row in header_rows:
-        for col in range(1, ws.max_column + 1):
-            value = ws.cell(row, col).value
-            normalized = normalize_header(value)
-
-            if normalized in accepted:
-                return col
-
-    return None
-
-
-def resolve_board_columns(ws) -> dict:
-    load_col = find_board_header_column(
-        ws,
-        ["LOAD #", "LOAD", "LOAD NUMBER"]
-    ) or COL_LOAD_OR_DAY
-
-    customer_col = find_board_header_column(
-        ws,
-        ["CUSTOMER", "DESTINATION"]
-    ) or COL_CUSTOMER
-
-    carrier_col = find_board_header_column(
-        ws,
-        ["CARRIER", "CARRIER COMPANY"]
-    )
-
-    type_col = find_board_header_column(
-        ws,
-        ["TYPE", "LOAD TYPE"]
-    )
-
-    carrier_type_col = find_board_header_column(
-        ws,
-        ["CARRIER-TYPE", "CARRIER TYPE", "CARRIERTYPE"]
-    )
-
-    time_col = find_board_header_column(
-        ws,
-        ["TIME", "APPT TIME", "APPOINTMENT TIME"]
-    ) or COL_TIME
-
-    tt4_col = find_board_header_column(
-        ws,
-        ["TT4"]
-    ) or COL_TT4
-
-    if not carrier_col:
-        carrier_col = carrier_type_col or COL_CARRIER_DEFAULT
-
-    return {
-        "load_col": load_col,
-        "customer_col": customer_col,
-        "carrier_col": carrier_col,
-        "type_col": type_col,
-        "carrier_type_col": carrier_type_col,
-        "time_col": time_col,
-        "tt4_col": tt4_col,
+    summary = {
+        "outbound_rows_loaded": len(records),
+        "inbound_rows_skipped": len(skipped_inbound),
+        "duplicate_outbound_loads": duplicates,
     }
 
-
-def get_carrier_output_value(record: dict, board_columns: dict) -> str:
-    carrier = clean_spaces(record.get("Carrier", ""))
-    load_type = clean_spaces(record.get("Load Type", ""))
-
-    type_col = board_columns.get("type_col")
-    carrier_type_col = board_columns.get("carrier_type_col")
-    carrier_col = board_columns.get("carrier_col")
-
-    if type_col and carrier_col != type_col:
-        return carrier
-
-    if carrier_type_col and not type_col:
-        if load_type and carrier:
-            return f"{load_type} - {carrier}"
-        if carrier:
-            return carrier
-        return load_type
-
-    if carrier:
-        return carrier
-
-    return load_type
+    return records, summary
 
 
 # ============================================================
-# PDF PARSER FOR THE MATCHED PACKET
+# MG PDF PARSER
 # ============================================================
 
-def extract_pdf_text_by_page(pdf_bytes: bytes) -> list[str]:
+def extract_pdf_pages(pdf_bytes: bytes) -> list[str]:
     pages = []
 
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -800,7 +493,7 @@ def extract_pdf_text_by_page(pdf_bytes: bytes) -> list[str]:
     return pages
 
 
-def extract_load_number(text: str) -> str:
+def extract_mg_load_number(text: str) -> str:
     match = re.search(r"\bLOAD:\s*(?:LD)?\s*([A-Z0-9]+)", text, re.IGNORECASE)
 
     if not match:
@@ -809,7 +502,7 @@ def extract_load_number(text: str) -> str:
     return normalize_load_number(match.group(1))
 
 
-def extract_pickup_datetime(text: str) -> tuple[str, str, str]:
+def extract_mg_pu_appt(text: str) -> tuple[str, str]:
     match = re.search(
         r"\bPU\s+APPT:\s*(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})",
         text,
@@ -817,54 +510,28 @@ def extract_pickup_datetime(text: str) -> tuple[str, str, str]:
     )
 
     if not match:
-        return "", "", ""
+        return "", ""
 
-    date_text = match.group(1)
-    time_text = match.group(2)
-    full_datetime = f"{date_text} {time_text}"
-
-    return full_datetime, date_text, time_text
+    return normalize_date(match.group(1)), normalize_time(match.group(2))
 
 
-def clean_carrier(raw_carrier: str) -> str:
-    carrier = clean_spaces(raw_carrier)
-
-    if not carrier:
-        return ""
-
-    upper_carrier = carrier.upper()
-
-    if upper_carrier == "CPUC":
-        return "CPU"
-
-    if upper_carrier.startswith("CPUC"):
-        return "CPU"
-
-    match = re.match(r"^[A-Z0-9]{3,6}\s+(.+)$", carrier)
-
-    if match:
-        carrier = match.group(1).strip()
-
-    carrier = clean_spaces(carrier)
-
-    if carrier.upper().startswith("CPUC"):
-        return "CPU"
-
-    return carrier
-
-
-def extract_carrier(text: str) -> str:
+def extract_mg_carrier(text: str) -> str:
     match = re.search(r"\bCARR/SCT\s+TR:\s*(.+)", text, re.IGNORECASE)
 
     if not match:
         return ""
 
-    raw_carrier = match.group(1).splitlines()[0]
+    carrier = clean_spaces(match.group(1).splitlines()[0])
 
-    return clean_carrier(raw_carrier)
+    if carrier.upper().startswith("CPUC"):
+        return "CPUC"
+
+    carrier = re.sub(r"^[A-Z0-9]{3,6}\s+", "", carrier).strip()
+
+    return clean_spaces(carrier)
 
 
-def extract_cases(text: str):
+def extract_mg_totals(text: str) -> tuple[float, float]:
     matches = re.findall(
         r"OUTBOUND\s+TOTALS:\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)",
         text,
@@ -872,28 +539,66 @@ def extract_cases(text: str):
     )
 
     if not matches:
-        return 0
+        return 0, 0
 
-    last_match = matches[-1]
-    return parse_number(last_match[2])
+    weight, _volume, quantity = matches[-1]
+
+    return parse_number(weight), parse_number(quantity)
 
 
-# ============================================================
-# CUSTOMER EXTRACTION
-# ============================================================
-
-def clean_customer_destination(value: str) -> str:
+def clean_customer_name(value: str) -> str:
     value = clean_spaces(value)
+
+    if not value:
+        return ""
+
+    value = re.sub(r"^\d{5,12}\s*/?\s*", "", value)
     value = re.sub(r"^\d{5,12}\s+", "", value)
     value = re.sub(r"\s+TK$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+T$", "", value, flags=re.IGNORECASE)
-    value = value.replace("DISTRIBUTION CENTER", "")
-    value = value.replace("WAREHOUSE", "")
+
+    bad_fragments = [
+        "RESER'S - TK - TOPEKA DISTRIBUTION CENTER",
+        "TOPEKA DISTRIBUTION CENTER",
+        "3121 SE 6TH AVE",
+        "TOPEKA, KS",
+        "PH:",
+        "FX:",
+        "PICKUP TOTAL",
+        "DROP TOTAL",
+        "OUTBOUND TOTALS",
+        "TOTAL MILES",
+        "PAGE ",
+        "ORDER#",
+        "WEIGHT",
+        "CUSTID",
+        "CUST",
+        "NAME",
+        "LOCATION",
+        "DATE",
+        "TIME",
+    ]
+
+    upper_value = value.upper()
+
+    for bad in bad_fragments:
+        if bad in upper_value:
+            return ""
+
+    value = re.sub(r"/\s*\d+[A-Z0-9\-\.]*$", "", value)
+    value = re.sub(r"^/\s*", "", value)
     value = clean_spaces(value)
+
+    if re.fullmatch(r"[\d\.\,\-]+", value):
+        return ""
+
+    if len(re.sub(r"[^A-Za-z]", "", value)) < 2:
+        return ""
+
     return value
 
 
-def extract_stop_customer_lines_from_loading_manifest(text: str) -> list[str]:
+def extract_customers_from_loading_manifest(text: str) -> list[str]:
     customers = []
 
     for raw_line in text.splitlines():
@@ -903,54 +608,81 @@ def extract_stop_customer_lines_from_loading_manifest(text: str) -> list[str]:
         if not match:
             continue
 
-        candidate = match.group(1).strip()
-        candidate_upper = candidate.upper()
+        candidate = clean_customer_name(match.group(1))
 
-        if candidate_upper.startswith(("TK ", "DC ", "SE ")):
+        if not candidate:
             continue
 
-        bad_words = [
-            "DROP TOTAL",
-            "OUTBOUND TOTALS",
-            "SUGGESTED DELIVERY",
-            "RESER'S - TK - TOPEKA",
-            "PAGE ",
-        ]
-
-        if any(word in candidate_upper for word in bad_words):
-            continue
-
-        candidate = clean_customer_destination(candidate)
-
-        if candidate:
+        if candidate not in customers:
             customers.append(candidate)
 
     return customers
 
 
-def get_pickup_section_from_shipping_manifest(text: str) -> str:
+def get_shipping_pickup_section(text: str) -> str:
     if "SHIPPING MANIFEST" not in text.upper():
         return ""
 
-    parts = re.split(r"Pickup\s+TOTAL:", text, flags=re.IGNORECASE)
+    if "Pickup TOTAL" in text:
+        return text.split("Pickup TOTAL", 1)[0]
 
-    if len(parts) < 2:
-        return text
+    if "PICKUP TOTAL" in text.upper():
+        return re.split(r"PICKUP\s+TOTAL", text, flags=re.IGNORECASE)[0]
 
-    return parts[0]
+    return text
 
 
-def extract_order_customer_lines_from_shipping_manifest(text: str) -> list[str]:
-    pickup_text = get_pickup_section_from_shipping_manifest(text)
+def flush_customer_parts(parts, customers):
+    cleaned_parts = []
+
+    for part in parts:
+        part = clean_customer_name(part)
+
+        if not part:
+            continue
+
+        if part.startswith("/"):
+            continue
+
+        cleaned_parts.append(part)
+
+    if not cleaned_parts:
+        return
+
+    customer = clean_spaces(" ".join(cleaned_parts))
+
+    customer = customer.replace("SPRINGFIEL D", "SPRINGFIELD")
+    customer = customer.replace("GWILLIMBUR Y", "GWILLIMBURY")
+    customer = customer.replace("DISTRIBUTO RS", "DISTRIBUTORS")
+    customer = customer.replace("PENNSYLVAN IA", "PENNSYLVANIA")
+    customer = customer.replace("CONNECTICU T", "CONNECTICUT")
+    customer = customer.replace("SOWESTERN ONT", "SW ONTARIO")
+    customer = customer.replace("SOUTHWESTERN ONT", "SW ONTARIO")
+    customer = clean_spaces(customer)
+
+    if customer and customer not in customers:
+        customers.append(customer)
+
+
+def extract_customers_from_shipping_manifest(text: str) -> list[str]:
+    pickup_text = get_shipping_pickup_section(text)
 
     if not pickup_text:
         return []
 
-    lines = [clean_spaces(x) for x in pickup_text.splitlines() if clean_spaces(x)]
+    lines = [
+        clean_spaces(line)
+        for line in pickup_text.splitlines()
+        if clean_spaces(line)
+    ]
+
     customers = []
+    current_parts = []
+    in_order = False
 
     stop_words = [
         "RESERS FINE FOOD",
+        "RESER'S - TK",
         "SHIPPING MANIFEST",
         "PRINTED BY",
         "LOAD:",
@@ -962,6 +694,9 @@ def extract_order_customer_lines_from_shipping_manifest(text: str) -> list[str]:
         "LOCATION",
         "ORDER#",
         "WEIGHT",
+        "VOL",
+        "PCS",
+        "PLT",
         "CUSTID",
         "CUST",
         "NAME",
@@ -969,951 +704,474 @@ def extract_order_customer_lines_from_shipping_manifest(text: str) -> list[str]:
         "3121 SE",
         "PH:",
         "APPT:",
+        "PICKUP TOTAL",
     ]
 
-    i = 0
+    for line in lines:
+        upper_line = line.upper()
 
-    while i < len(lines):
-        line = lines[i]
-        starts_customer = False
-        initial_name_parts = []
+        if re.match(r"^\d{8,12}-\d{3}", line):
+            if current_parts:
+                flush_customer_parts(current_parts, customers)
 
-        if re.match(r"^\d{1,12}/$", line):
-            starts_customer = True
+            current_parts = []
+            in_order = True
 
-        elif re.search(r"\b\d{1,12}/\s*$", line):
-            starts_customer = True
+            slash_match = re.search(r"\b[A-Z0-9]{1,10}/\s*(.+)$", line)
+            if slash_match:
+                possible = clean_customer_name(slash_match.group(1))
+                if possible:
+                    current_parts.append(possible)
 
-        elif re.search(r"\b[A-Z]{1,4}/\s*[A-Z]", line):
-            starts_customer = True
-            after_slash = line.split("/", 1)[1].strip()
-            if after_slash:
-                initial_name_parts.append(after_slash)
-
-        if not starts_customer:
-            i += 1
             continue
 
-        name_parts = initial_name_parts[:]
-        j = i + 1
+        if not in_order:
+            continue
 
-        while j < len(lines):
-            part = lines[j]
-            part_upper = part.upper()
+        if any(word in upper_line for word in stop_words):
+            if current_parts:
+                flush_customer_parts(current_parts, customers)
+            current_parts = []
+            in_order = False
+            continue
 
-            if part.startswith("/"):
-                break
+        if line.startswith("/"):
+            if current_parts:
+                flush_customer_parts(current_parts, customers)
+            current_parts = []
+            in_order = False
+            continue
 
-            if re.match(r"^\d{8,12}-\d{3}", part):
-                break
+        if re.fullmatch(r"[\d\.\,\-]+", line):
+            continue
 
-            if any(word in part_upper for word in stop_words):
-                break
+        if re.fullmatch(r"\d{2,12}/?", line):
+            continue
 
-            if "TOTAL" in part_upper:
-                break
+        if re.match(r"^\d{2,12}/", line):
+            after_slash = line.split("/", 1)[1].strip()
+            possible = clean_customer_name(after_slash)
+            if possible:
+                current_parts.append(possible)
+            continue
 
-            if re.fullmatch(r"[\d\.\-\,]+", part):
-                break
+        possible = clean_customer_name(line)
 
-            if re.match(r"^\d{1,12}/$", part):
-                break
+        if possible:
+            current_parts.append(possible)
 
-            name_parts.append(part)
-            j += 1
+    if current_parts:
+        flush_customer_parts(current_parts, customers)
 
-        customer = clean_customer_destination(" ".join(name_parts))
-
-        if customer:
-            customers.append(customer)
-
-        i = max(j, i + 1)
-
-    cleaned = []
+    final_customers = []
 
     for customer in customers:
-        customer_upper = customer.upper()
+        customer = clean_spaces(customer)
 
-        if not customer_upper:
+        if not customer:
             continue
 
-        if customer_upper in ["CUST", "NAME", "PO"]:
-            continue
+        if len(customer) > 70:
+            words = customer.split()
+            customer = " ".join(words[:8])
 
-        if len(customer_upper) <= 1:
-            continue
+        if customer not in final_customers:
+            final_customers.append(customer)
 
-        cleaned.append(customer)
-
-    return cleaned
-
-
-CUSTOMER_ABBREVIATIONS = {
-    "US FOODS": "US FOODS",
-    "U.S. FOODS": "US FOODS",
-    "SYSCO": "SYSCO",
-    "PFS": "PFS",
-    "PERFORMANCE FOOD": "PFS",
-    "LOBLAWS": "LOBLAWS",
-    "LOWLAWS": "LOBLAWS",
-    "SOBEYS": "SOBEYS",
-    "COSTCO": "COSTCO",
-    "AWG": "AWG",
-    "ASSOC WHLS GROC": "AWG",
-    "ASSOCIATED WHOLESALE": "AWG",
-    "ASSOCIATED GROCERS": "AWG",
-    "JEWEL OSCO": "JEWEL OSCO",
-    "JEWEL": "JEWEL OSCO",
-    "SAFEWAY": "SAFEWAY",
-    "WAKEFERN": "WAKEFERN",
-    "BURRIS": "BURRIS",
-    "KROGER": "KROGER",
-    "LIPARI": "LIPARI",
-    "HEB": "HEB",
-    "H.E.B": "HEB",
-    "GFS": "GFS",
-    "GORDON": "GFS",
-    "METRO": "METRO",
-    "ALDI": "ALDI",
-    "FOOD LION": "FOOD LION",
-    "PUBLIX": "PUBLIX",
-    "WEGMANS": "WEGMANS",
-    "MARKET BASKET": "MARKET BASKET",
-    "C&S": "C&S",
-    "CERTCO": "CERTCO",
-    "RESTAURANT DEPOT": "RESTAURANT DEPOT",
-    "REDNERS": "REDNERS",
-    "INGLES": "INGLES",
-    "DARDEN": "DARDEN",
-    "CORE MARK": "CORE MARK",
-    "PALMER": "PALMER",
-    "BIG Y": "BIG Y",
-    "CHENEY": "CHENEY",
-    "HARRIS TEETER": "HARRIS TEETER",
-    "PERISHABLE DIST": "PDI",
-    "PDI": "PDI",
-    "FRAN TOMALIS": "FRAN TOMALIS",
-    "TOMALIS": "FRAN TOMALIS",
-    "NORTHWEST": "NORTHWEST",
-    "PRATTS": "PRATTS",
-    "FLANAGAN": "FLANAGAN",
-    "ZARKYS": "ZARKYS",
-    "LORENZ": "LORENZ",
-    "VOILA": "VOILA",
-    "RESER'S": "RESER'S",
-    "RESERS": "RESER'S",
-}
+    return final_customers
 
 
-STATE_NAME_TO_CODE = {
-    "ALABAMA": "AL",
-    "ALASKA": "AK",
-    "ARIZONA": "AZ",
-    "ARKANSAS": "AR",
-    "CALIFORNIA": "CA",
-    "COLORADO": "CO",
-    "CONNECTICUT": "CT",
-    "DELAWARE": "DE",
-    "FLORIDA": "FL",
-    "GEORGIA": "GA",
-    "HAWAII": "HI",
-    "IDAHO": "ID",
-    "ILLINOIS": "IL",
-    "INDIANA": "IN",
-    "IOWA": "IA",
-    "KANSAS": "KS",
-    "KENTUCKY": "KY",
-    "LOUISIANA": "LA",
-    "MAINE": "ME",
-    "MARYLAND": "MD",
-    "MASSACHUSETTS": "MA",
-    "MICHIGAN": "MI",
-    "MINNESOTA": "MN",
-    "MISSISSIPPI": "MS",
-    "MISSOURI": "MO",
-    "MONTANA": "MT",
-    "NEBRASKA": "NE",
-    "NEVADA": "NV",
-    "NEW HAMPSHIRE": "NH",
-    "NEW JERSEY": "NJ",
-    "NEW MEXICO": "NM",
-    "NEW YORK": "NY",
-    "NORTH CAROLINA": "NC",
-    "NORTH DAKOTA": "ND",
-    "OHIO": "OH",
-    "OKLAHOMA": "OK",
-    "OREGON": "OR",
-    "PENNSYLVANIA": "PA",
-    "RHODE ISLAND": "RI",
-    "SOUTH CAROLINA": "SC",
-    "SOUTH DAKOTA": "SD",
-    "TENNESSEE": "TN",
-    "TEXAS": "TX",
-    "UTAH": "UT",
-    "VERMONT": "VT",
-    "VIRGINIA": "VA",
-    "WASHINGTON": "WA",
-    "WEST VIRGINIA": "WV",
-    "WISCONSIN": "WI",
-    "WYOMING": "WY",
-    "ONTARIO": "ON",
-    "QUEBEC": "QC",
-    "BRITISH COLUMBIA": "BC",
-    "ALBERTA": "AB",
-    "MANITOBA": "MB",
-    "SASKATCHEWAN": "SK",
-    "NOVA SCOTIA": "NS",
-    "NEW BRUNSWICK": "NB",
-}
+def is_internal_transfer_customer(customer: str) -> bool:
+    upper_customer = customer.upper()
 
-
-VALID_STATE_CODES = {
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-    "ON", "QC", "BC", "AB", "MB", "SK", "NS", "NB", "NL", "PE",
-    "YT", "NT", "NU",
-}
-
-
-def get_destination_text_only(combined_text: str) -> str:
-    if "Pickup TOTAL" in combined_text:
-        return combined_text.split("Pickup TOTAL", 1)[-1]
-
-    return combined_text
-
-
-def extract_state_codes_from_text(text: str) -> list[str]:
-    states = []
-    upper_text = text.upper()
-
-    us_matches = re.findall(r",\s*([A-Z]{2})\s+\d{5}", upper_text)
-    ca_matches = re.findall(r",\s*([A-Z]{2})\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d", upper_text)
-
-    name_matches = []
-
-    for state_name, state_code in STATE_NAME_TO_CODE.items():
-        if state_name in upper_text:
-            name_matches.append(state_code)
-
-    for state in us_matches + ca_matches + name_matches:
-        state = state.strip().upper()
-
-        if state in VALID_STATE_CODES and state not in states:
-            states.append(state)
-
-    return states
-
-
-def extract_state_from_customer_line(customer_line: str, destination_text: str) -> str:
-    text = clean_spaces(customer_line).upper()
-
-    words = re.findall(r"\b[A-Z]{2}\b", text)
-
-    for word in reversed(words):
-        if word in VALID_STATE_CODES:
-            return word
-
-    for state_name, state_code in STATE_NAME_TO_CODE.items():
-        if state_name in text:
-            return state_code
-
-    states = extract_state_codes_from_text(destination_text)
-
-    if states:
-        return states[0]
-
-    return ""
-
-
-def abbreviate_customer_name(raw_customer: str) -> str:
-    if not raw_customer:
-        return ""
-
-    text = clean_spaces(raw_customer).upper()
-    text = re.sub(r"^\d{5,12}\s+", "", text)
-
-    noise_words = [
-        "INC",
-        "LLC",
-        "CORP",
-        "CORPORATION",
-        "COMPANY",
-        "CO",
-        "DELI",
-        "MEAT",
-        "TK",
-        "T",
-        "TORTILLA",
-        "SALADS",
-        "BAKED",
-        "FRESH DC",
-        "REGION",
+    internal_terms = [
+        "RESER'S -",
+        "RESERS -",
         "DISTRIBUTION CENTER",
-        "WAREHOUSE",
-        "CUSTOMER PICK UP CARRIER",
-        "RETAIL",
-        "FOODSERVICE",
-        "FOOD SERVICE",
-        "MARKET",
-        "MARKETS",
-        "GENERAL STORES",
+        "CENTURY DISTRIBUTION",
+        "HALIFAX DISTRIBUTION",
+        "REED TRUCKING",
+        "BOZEL TRANSFER",
+        "REET -",
+        "BOZL -",
+        "NC RESER",
+        "DC RESER",
     ]
 
-    for word in noise_words:
-        text = re.sub(rf"\b{re.escape(word)}\b", "", text)
-
-    text = clean_spaces(text)
-
-    for key, short_name in CUSTOMER_ABBREVIATIONS.items():
-        if key in text:
-            return short_name
-
-    words = text.split()
-    return " ".join(words[:3])
+    return any(term in upper_customer for term in internal_terms)
 
 
-def build_short_customer_field(customer_lines: list[str], combined_text: str) -> str:
-    destination_text = get_destination_text_only(combined_text)
-    short_customers = []
+def extract_mg_customers(loading_text: str, shipping_text: str) -> str:
+    shipping_customers = extract_customers_from_shipping_manifest(shipping_text)
+    loading_customers = extract_customers_from_loading_manifest(loading_text)
 
-    for customer_line in customer_lines:
-        short_name = abbreviate_customer_name(customer_line)
-        state = extract_state_from_customer_line(customer_line, destination_text)
+    if shipping_customers:
+        selected = shipping_customers
+    else:
+        selected = loading_customers
 
-        if state:
-            short_customer = clean_spaces(f"{short_name} {state}")
-        else:
-            short_customer = clean_spaces(short_name)
+    useful_loading = [
+        c for c in loading_customers
+        if not is_internal_transfer_customer(c)
+    ]
 
-        if not short_customer:
+    if useful_loading and not shipping_customers:
+        selected = useful_loading
+
+    final_customers = []
+
+    for customer in selected:
+        customer = clean_customer_name(customer)
+
+        if not customer:
             continue
 
-        if short_customer not in short_customers:
-            short_customers.append(short_customer)
+        if customer not in final_customers:
+            final_customers.append(customer)
 
-    return " / ".join(short_customers)
-
-
-# ============================================================
-# TT4 DETECTION
-# ============================================================
-
-def is_canadian_load(text: str) -> bool:
-    canadian_patterns = [
-        r"\bON\b",
-        r"\bQC\b",
-        r"\bBC\b",
-        r"\bAB\b",
-        r"\bMB\b",
-        r"\bSK\b",
-        r"\bNS\b",
-        r"\bNB\b",
-        r"\bNL\b",
-        r"\bPE\b",
-        r"\bYT\b",
-        r"\bNT\b",
-        r"\bNU\b",
-        "ONTARIO",
-        "QUEBEC",
-        "CANADA",
-        "BRAMPTON",
-        "VAUGHAN",
-        "MISSISSAUGA",
-        "TORONTO",
-        "MILTON",
-        "AJAX",
-        "CAMBRIDGE",
-        "REGINA",
-        "WINNIPEG",
-        "VARENNES",
-    ]
-
-    upper_text = text.upper()
-
-    for pattern in canadian_patterns:
-        if pattern.startswith(r"\b"):
-            if re.search(pattern, upper_text):
-                return True
-        else:
-            if pattern in upper_text:
-                return True
-
-    return False
-
-
-def detect_tt4_required(record: dict) -> str:
-    customer = record.get("Customer", "").upper()
-    raw_text = record.get("Raw Text", "").upper()
-
-    if TT4_FOR_CANADA and record.get("Is Canada", False):
-        return "TT4"
-
-    for keyword in TT4_CUSTOMER_KEYWORDS:
-        keyword_upper = keyword.upper()
-
-        if keyword_upper in customer or keyword_upper in raw_text:
-            return "TT4"
-
-    return ""
+    return " / ".join(final_customers)
 
 
 def parse_manifest_pdf(pdf_bytes: bytes) -> tuple[list[dict], list[dict]]:
-    pages = extract_pdf_text_by_page(pdf_bytes)
+    pages = extract_pdf_pages(pdf_bytes)
 
     pages_by_load = defaultdict(list)
 
     for page_text in pages:
-        load_number = extract_load_number(page_text)
+        load_number = extract_mg_load_number(page_text)
 
         if load_number:
             pages_by_load[load_number].append(page_text)
 
     records = []
     duplicate_pdf_records = []
-    seen_pdf_loads = set()
+    seen_loads = set()
 
     for load_number, load_pages in pages_by_load.items():
         clean_load = normalize_load_number(load_number)
 
-        if clean_load in seen_pdf_loads:
+        if clean_load in seen_loads:
             duplicate_pdf_records.append({
                 "Load": clean_load,
                 "Reason": "Duplicate inside uploaded PDF"
             })
             continue
 
-        seen_pdf_loads.add(clean_load)
+        seen_loads.add(clean_load)
 
-        loading_pages = [p for p in load_pages if "LOADING MANIFEST" in p.upper()]
-        shipping_pages = [p for p in load_pages if "SHIPPING MANIFEST" in p.upper()]
+        loading_pages = [
+            p for p in load_pages
+            if "LOADING MANIFEST" in p.upper()
+        ]
 
-        if not loading_pages:
-            continue
+        shipping_pages = [
+            p for p in load_pages
+            if "SHIPPING MANIFEST" in p.upper()
+        ]
 
-        loading_text = "\n".join(loading_pages)
-        shipping_text = "\n".join(shipping_pages)
-        combined_text = loading_text + "\n" + shipping_text
-
-        full_datetime, date_text, time_text = extract_pickup_datetime(loading_text)
-
-        carrier = extract_carrier(loading_text)
-        cases = extract_cases(loading_text)
-
-        order_customer_lines = extract_order_customer_lines_from_shipping_manifest(shipping_text)
-        stop_customer_lines = extract_stop_customer_lines_from_loading_manifest(loading_text)
-
-        if order_customer_lines:
-            customer_lines = order_customer_lines
+        if loading_pages:
+            loading_text = "\n".join(loading_pages)
         else:
-            customer_lines = stop_customer_lines
+            loading_text = "\n".join(load_pages)
 
-        customer = build_short_customer_field(customer_lines, combined_text)
+        shipping_text = "\n".join(shipping_pages)
 
-        record = {
-            "Load": clean_load,
-            "Customer": customer,
-            "Carrier": carrier,
-            "Load Type": "",
-            "Pickup DateTime": full_datetime,
-            "Pickup Date": date_text,
-            "Pickup Time": time_text,
-            "PDF Date": date_text,
-            "PDF Time": time_text,
-            "Cases": cases,
-            "Is Canada": is_canadian_load(combined_text),
-            "Raw Text": combined_text,
-            "Source": "New",
-        }
+        appt_date, appt_time = extract_mg_pu_appt(loading_text)
+        carrier = extract_mg_carrier(loading_text)
+        actual_weight, actual_quantity = extract_mg_totals(loading_text)
+        customer = extract_mg_customers(loading_text, shipping_text)
 
-        record["TT4"] = detect_tt4_required(record)
+        records.append({
+            "load": clean_load,
+            "appt_date": appt_date,
+            "appt_time": appt_time,
+            "carrier": carrier,
+            "actual_weight": actual_weight,
+            "actual_quantity": actual_quantity,
+            "customer": customer,
+        })
 
-        records.append(record)
-
-    records.sort(
-        key=lambda x: (
-            parse_sort_datetime(x.get("Pickup DateTime", "")),
-            x.get("Load", "")
-        )
-    )
+    records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
 
     return records, duplicate_pdf_records
 
 
 # ============================================================
-# BOARD HELPERS
+# TEMPLATE POPULATION
 # ============================================================
 
-def find_label_column(ws, label_text: str, search_rows=(1, 2, 3)):
-    label_text = label_text.strip().upper()
+def validate_template(wb):
+    missing = []
 
-    for row in search_rows:
-        for col in range(1, ws.max_column + 1):
-            value = ws.cell(row, col).value
+    for sheet_name in [OPENDOCK_SHEET, MG_REPORT_SHEET]:
+        if sheet_name not in wb.sheetnames:
+            missing.append(sheet_name)
 
-            if value is None:
-                continue
-
-            if str(value).strip().upper() == label_text:
-                return col
-
-    return None
+    if missing:
+        raise ValueError("Template is missing these sheets: " + ", ".join(missing))
 
 
-def find_last_used_board_row(ws, start_row: int) -> int:
-    last_row = start_row - 1
+def populate_opendock_sheet(wb, opendock_records):
+    ws = wb[OPENDOCK_SHEET]
+    headers = get_header_map(ws, 1)
 
-    for row in range(start_row, ws.max_row + 1):
-        row_has_value = False
+    load_col = find_col(headers, ["Load Reference", "Load", "Load #"], 1)
+    appt_date_col = find_col(headers, ["Appt Date", "Appointment Date", "Date"], 2)
+    appt_time_col = find_col(headers, ["Appt Time", "Appointment Time", "Time"], 3)
+    arrival_date_col = find_col(headers, ["Arrival Date"], 4)
+    arrival_time_col = find_col(headers, ["Arrival Time"], 5)
+    departure_date_col = find_col(headers, ["Departure Date"], 6)
+    departure_time_col = find_col(headers, ["Departure Time"], 7)
+    status_col = find_col(headers, ["Status"], 8)
+    carrier_col = find_col(headers, ["Carrier Company", "Carrier"], 9)
+    load_type_col = find_col(headers, ["Load Type", "Type"], 10)
+    dock_col = find_col(headers, ["Dock", "Door"], 11)
 
-        for col in range(TABLE_MIN_COL, TABLE_MAX_COL + 1):
-            value = ws.cell(row, col).value
-
-            if value not in [None, ""]:
-                row_has_value = True
-                break
-
-        if row_has_value:
-            last_row = row
-
-    return last_row
-
-
-def is_day_row_value(value) -> bool:
-    if value is None:
-        return False
-
-    weekday_names = {
-        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-        "FRIDAY", "SATURDAY", "SUNDAY"
-    }
-
-    return str(value).strip().upper() in weekday_names
-
-
-def read_existing_board_records(ws, start_row: int, board_columns: dict) -> tuple[list[dict], dict]:
-    records = []
-    existing_day_totals = defaultdict(lambda: {"Cases": 0, "Qty": 0})
-
-    last_row = find_last_used_board_row(ws, start_row)
-
-    cases_label_col = find_label_column(ws, "Cases")
-    qty_label_col = find_label_column(ws, "Qty")
-
-    current_date = ""
-
-    load_col = board_columns.get("load_col", COL_LOAD_OR_DAY)
-    customer_col = board_columns.get("customer_col", COL_CUSTOMER)
-    carrier_col = board_columns.get("carrier_col", COL_CARRIER_DEFAULT)
-    type_col = board_columns.get("type_col")
-    time_col = board_columns.get("time_col", COL_TIME)
-    tt4_col = board_columns.get("tt4_col", COL_TT4)
-
-    for row in range(start_row, last_row + 1):
-        col_a = ws.cell(row, load_col).value
-        col_b = ws.cell(row, customer_col).value
-        col_d = ws.cell(row, time_col).value
-
-        if is_day_row_value(col_a):
-            current_date = parse_date_any(col_b)
-
-            if current_date:
-                if cases_label_col:
-                    existing_day_totals[current_date]["Cases"] = parse_number(
-                        ws.cell(row, cases_label_col + 1).value
-                    )
-
-                if qty_label_col:
-                    existing_day_totals[current_date]["Qty"] = parse_number(
-                        ws.cell(row, qty_label_col + 1).value
-                    )
-
-            continue
-
-        load_number = normalize_load_number(col_a)
-
-        if load_number:
-            pickup_time = format_time_only(col_d)
-            pickup_datetime = build_datetime_from_date_time(current_date, pickup_time)
-
-            carrier_value = clean_spaces(ws.cell(row, carrier_col).value)
-            type_value = ""
-
-            if type_col:
-                type_value = clean_spaces(ws.cell(row, type_col).value)
-
-            records.append({
-                "Load": load_number,
-                "Customer": clean_spaces(ws.cell(row, customer_col).value),
-                "Load Type": type_value,
-                "Carrier": carrier_value,
-                "Pickup DateTime": pickup_datetime,
-                "Pickup Date": current_date,
-                "Pickup Time": pickup_time,
-                "PDF Date": "",
-                "PDF Time": "",
-                "Appointment Date": current_date,
-                "Appointment Time": pickup_time,
-                "Cases": 0,
-                "TT4": clean_spaces(ws.cell(row, tt4_col).value),
-                "Source": "Existing",
-            })
-
-    return records, dict(existing_day_totals)
-
-
-def group_records_by_date(records: list[dict]) -> dict:
-    grouped = defaultdict(list)
-
-    for record in records:
-        date_text = record.get("Pickup Date", "")
-        grouped[date_text].append(record)
-
-    for date_text in grouped:
-        grouped[date_text].sort(
-            key=lambda x: (
-                parse_sort_datetime(x.get("Pickup DateTime", "")),
-                x.get("Load", "")
-            )
-        )
-
-    return dict(
-        sorted(
-            grouped.items(),
-            key=lambda x: parse_sort_datetime(x[0] + " 00:00")
-        )
-    )
-
-
-def total_cases_for_day(records_for_day: list[dict], existing_day_total: int = 0):
-    new_cases = sum(
-        parse_number(record.get("Cases"))
-        for record in records_for_day
-        if record.get("Source") == "New"
-    )
-
-    return parse_number(existing_day_total) + new_cases
-
-
-def total_loads_for_day(records_for_day: list[dict]):
-    return len(records_for_day)
-
-
-# ============================================================
-# EXCEL FORMATTING
-# ============================================================
-
-def copy_cell(source_cell, target_cell):
-    target_cell.value = source_cell.value
-
-    if source_cell.has_style:
-        target_cell.font = copy(source_cell.font)
-        target_cell.fill = copy(source_cell.fill)
-        target_cell.border = copy(source_cell.border)
-        target_cell.alignment = copy(source_cell.alignment)
-        target_cell.number_format = source_cell.number_format
-        target_cell.protection = copy(source_cell.protection)
-
-
-def copy_row_template(ws, source_row: int, target_row: int):
-    ws.row_dimensions[target_row].height = ws.row_dimensions[source_row].height
-
-    for col in range(BOARD_MIN_COL, BOARD_MAX_COL + 1):
-        source_cell = ws.cell(source_row, col)
-        target_cell = ws.cell(target_row, col)
-        copy_cell(source_cell, target_cell)
-
-
-def make_thin_border():
-    return Border(
-        left=Side(style="thin", color="000000"),
-        right=Side(style="thin", color="000000"),
-        top=Side(style="thin", color="000000"),
-        bottom=Side(style="thin", color="000000"),
-    )
-
-
-def apply_borders_to_range(ws, start_row: int, end_row: int):
-    border = make_thin_border()
-
-    for row in range(start_row, end_row + 1):
-        for col in range(BOARD_MIN_COL, BOARD_MAX_COL + 1):
-            ws.cell(row, col).border = border
-
-
-def style_day_row(ws, row: int):
-    dark_blue = "002060"
-    border = make_thin_border()
-
-    for col in range(BOARD_MIN_COL, BOARD_MAX_COL + 1):
-        cell = ws.cell(row, col)
-        cell.fill = PatternFill("solid", fgColor=dark_blue)
-        cell.font = Font(color="FFFFFF", bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
-
-
-def style_load_row(ws, row: int, board_columns: dict):
-    input_columns = [
-        board_columns.get("load_col", COL_LOAD_OR_DAY),
-        board_columns.get("customer_col", COL_CUSTOMER),
-        board_columns.get("carrier_col", COL_CARRIER_DEFAULT),
-        board_columns.get("time_col", COL_TIME),
-        board_columns.get("tt4_col", COL_TT4),
+    output_cols = [
+        load_col,
+        appt_date_col,
+        appt_time_col,
+        arrival_date_col,
+        arrival_time_col,
+        departure_date_col,
+        departure_time_col,
+        status_col,
+        carrier_col,
+        load_type_col,
+        dock_col,
     ]
 
-    if board_columns.get("type_col"):
-        input_columns.append(board_columns.get("type_col"))
+    output_cols = sorted(set([col for col in output_cols if col]))
 
-    for col in sorted(set(input_columns)):
-        if col is None:
-            continue
+    max_row = max(ws.max_row, OPENDOCK_START_ROW + MAX_OPENDOCK_ROWS)
 
-        cell = ws.cell(row, col)
-        cell.font = Font(color="000000", bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
-        cell.border = make_thin_border()
+    clear_range_values(ws, OPENDOCK_START_ROW, max_row, output_cols)
+
+    for index, record in enumerate(opendock_records, start=OPENDOCK_START_ROW):
+        copy_row_format(ws, OPENDOCK_START_ROW, index, max(output_cols))
+
+        ws.cell(index, load_col).value = record.get("load", "")
+        ws.cell(index, appt_date_col).value = record.get("appt_date", "")
+        ws.cell(index, appt_time_col).value = record.get("appt_time", "")
+        ws.cell(index, arrival_date_col).value = record.get("arrival_date", "")
+        ws.cell(index, arrival_time_col).value = record.get("arrival_time", "")
+        ws.cell(index, departure_date_col).value = record.get("departure_date", "")
+        ws.cell(index, departure_time_col).value = record.get("departure_time", "")
+        ws.cell(index, status_col).value = record.get("status", "")
+        ws.cell(index, carrier_col).value = record.get("carrier", "")
+        ws.cell(index, load_type_col).value = record.get("load_type", "")
+        ws.cell(index, dock_col).value = record.get("dock", "")
 
 
-def clear_existing_table_values(ws, start_row: int, board_columns: dict):
-    last_row = find_last_used_board_row(ws, start_row)
+def populate_mg_report_sheet(wb, mg_records):
+    ws = wb[MG_REPORT_SHEET]
+    headers = get_header_map(ws, 1)
 
-    if last_row < start_row:
-        return
+    load_col = find_col(headers, ["Load #", "Load", "Load Number"], 1)
+    weight_col = find_col(headers, ["Actual Weight", "Weight"], 2)
+    quantity_col = find_col(headers, ["Actual Quantity", "Cases", "Quantity"], 3)
+    customer_col = find_col(headers, ["Consignee Name", "Customer", "Customer(s)", "Destination"], 4)
+    appt_date_col = find_col(headers, ["Appt Date", "Appointment Date", "Pickup Date"], None)
+    appt_time_col = find_col(headers, ["Appt Time", "Appointment Time", "Pickup Time"], None)
+    carrier_col = find_col(headers, ["Carrier", "Carrier Company"], None)
 
-    cases_label_col = find_label_column(ws, "Cases")
-    qty_label_col = find_label_column(ws, "Qty")
-
-    columns_to_clear = [
-        board_columns.get("load_col", COL_LOAD_OR_DAY),
-        board_columns.get("customer_col", COL_CUSTOMER),
-        board_columns.get("carrier_col", COL_CARRIER_DEFAULT),
-        board_columns.get("time_col", COL_TIME),
-        board_columns.get("tt4_col", COL_TT4),
+    output_cols = [
+        load_col,
+        weight_col,
+        quantity_col,
+        customer_col,
+        appt_date_col,
+        appt_time_col,
+        carrier_col,
     ]
 
-    if board_columns.get("type_col"):
-        columns_to_clear.append(board_columns.get("type_col"))
+    output_cols = sorted(set([col for col in output_cols if col]))
 
-    if cases_label_col:
-        columns_to_clear.append(cases_label_col + 1)
+    max_row = max(ws.max_row, MG_REPORT_START_ROW + MAX_MG_REPORT_ROWS)
 
-    if qty_label_col:
-        columns_to_clear.append(qty_label_col + 1)
+    clear_range_values(ws, MG_REPORT_START_ROW, max_row, output_cols)
 
-    columns_to_clear = sorted(set([col for col in columns_to_clear if col]))
+    for index, record in enumerate(mg_records, start=MG_REPORT_START_ROW):
+        copy_row_format(ws, MG_REPORT_START_ROW, index, max(output_cols))
 
-    for row in range(start_row, last_row + 1):
-        for col in columns_to_clear:
-            ws.cell(row, col).value = None
+        ws.cell(index, load_col).value = record.get("load", "")
+        ws.cell(index, weight_col).value = record.get("actual_weight", 0)
+        ws.cell(index, quantity_col).value = record.get("actual_quantity", 0)
+        ws.cell(index, customer_col).value = record.get("customer", "")
 
+        if appt_date_col:
+            ws.cell(index, appt_date_col).value = record.get("appt_date", "")
 
-def clear_extra_output_columns(ws, start_row: int):
-    last_row = max(ws.max_row, start_row)
-
-    for row in range(start_row, last_row + 1):
-        for col in CLEAR_EXTRA_OUTPUT_COLS:
-            ws.cell(row, col).value = None
-
-
-# ============================================================
-# EXCEL BOARD POPULATION
-# ============================================================
-
-def populate_board(
-    excel_bytes: bytes,
-    pdf_records: list[dict],
-    appointment_lookup: dict
-) -> tuple[bytes, list[dict], list[dict], list[dict], list[dict]]:
-    wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
-
-    if SHEET_NAME not in wb.sheetnames:
-        raise ValueError(
-            f"Sheet '{SHEET_NAME}' was not found. Available sheets: {wb.sheetnames}"
-        )
-
-    ws = wb[SHEET_NAME]
-
-    board_columns = resolve_board_columns(ws)
-
-    appointment_records, report_match_issues = build_records_from_appointments(
-        pdf_records,
-        appointment_lookup
-    )
-
-    existing_records, existing_day_totals = read_existing_board_records(
-        ws,
-        START_ROW,
-        board_columns
-    )
-
-    existing_loads = {normalize_load_number(record.get("Load")) for record in existing_records}
-
-    added_records = []
-    skipped_duplicates = []
-    seen_new_upload = set()
-
-    for record in appointment_records:
-        load_number = normalize_load_number(record.get("Load", ""))
-
-        if not load_number:
-            skipped_duplicates.append({
-                "Load": record.get("Load", ""),
-                "Customer": record.get("Customer", ""),
-                "Reason": "Missing or invalid load number"
-            })
-            continue
-
-        if load_number in existing_loads:
-            skipped_duplicates.append({
-                "Load": load_number,
-                "Customer": record.get("Customer", ""),
-                "Reason": "Already exists in uploaded Excel board"
-            })
-            continue
-
-        if load_number in seen_new_upload:
-            skipped_duplicates.append({
-                "Load": load_number,
-                "Customer": record.get("Customer", ""),
-                "Reason": "Duplicate inside appointments Excel upload"
-            })
-            continue
-
-        seen_new_upload.add(load_number)
-        record["Source"] = "New"
-        added_records.append(record)
-
-    final_records = existing_records + added_records
-
-    final_records.sort(
-        key=lambda x: (
-            parse_sort_datetime(x.get("Pickup DateTime", "")),
-            x.get("Load", "")
-        )
-    )
-
-    clear_existing_table_values(ws, START_ROW, board_columns)
-
-    grouped = group_records_by_date(final_records)
-
-    current_row = START_ROW
-
-    load_col = board_columns.get("load_col", COL_LOAD_OR_DAY)
-    customer_col = board_columns.get("customer_col", COL_CUSTOMER)
-    carrier_col = board_columns.get("carrier_col", COL_CARRIER_DEFAULT)
-    type_col = board_columns.get("type_col")
-    time_col = board_columns.get("time_col", COL_TIME)
-    tt4_col = board_columns.get("tt4_col", COL_TT4)
-
-    cases_label_col = find_label_column(ws, "Cases")
-    qty_label_col = find_label_column(ws, "Qty")
-
-    for date_text, records_for_day in grouped.items():
-        copy_row_template(ws, TEMPLATE_DAY_ROW, current_row)
-        style_day_row(ws, current_row)
-
-        ws.cell(current_row, load_col).value = get_day_name(date_text)
-        ws.cell(current_row, customer_col).value = format_date_short(date_text)
+        if appt_time_col:
+            ws.cell(index, appt_time_col).value = record.get("appt_time", "")
 
         if carrier_col:
-            ws.cell(current_row, carrier_col).value = ""
+            ws.cell(index, carrier_col).value = record.get("carrier", "")
 
-        if type_col:
-            ws.cell(current_row, type_col).value = ""
 
-        ws.cell(current_row, time_col).value = ""
+def write_dispatch_load_count(wb, opendock_records):
+    if DISPATCH_SHEET not in wb.sheetnames:
+        return
 
-        existing_cases_for_day = existing_day_totals.get(date_text, {}).get("Cases", 0)
+    ws = wb[DISPATCH_SHEET]
+    ws["G1"] = len(opendock_records)
 
-        if cases_label_col:
-            cases_cell = ws.cell(current_row, cases_label_col + 1)
-            cases_cell.value = total_cases_for_day(records_for_day, existing_cases_for_day)
-            cases_cell.font = Font(color="FFFFFF", bold=True)
-            cases_cell.alignment = Alignment(horizontal="center", vertical="center")
-            cases_cell.border = make_thin_border()
 
-        if qty_label_col:
-            qty_cell = ws.cell(current_row, qty_label_col + 1)
-            qty_cell.value = total_loads_for_day(records_for_day)
-            qty_cell.font = Font(color="FFFFFF", bold=True)
-            qty_cell.alignment = Alignment(horizontal="center", vertical="center")
-            qty_cell.border = make_thin_border()
+def add_match_report_sheet(wb, opendock_records, mg_records):
+    sheet_name = "MATCH REPORT"
 
-        current_row += 1
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
 
-        for record in records_for_day:
-            copy_row_template(ws, TEMPLATE_LOAD_ROW, current_row)
+    ws = wb.create_sheet(sheet_name)
 
-            ws.cell(current_row, load_col).value = record.get("Load", "")
-            ws.cell(current_row, customer_col).value = record.get("Customer", "")
-            ws.cell(current_row, carrier_col).value = get_carrier_output_value(record, board_columns)
+    headers = [
+        "Load",
+        "Opendock Date",
+        "Opendock Time",
+        "MG Date",
+        "MG Time",
+        "Opendock Carrier",
+        "MG Carrier",
+        "Opendock Load Type",
+        "MG Customer(s)",
+        "MG Weight",
+        "MG Cases",
+        "Status",
+    ]
 
-            if type_col:
-                ws.cell(current_row, type_col).value = record.get("Load Type", "")
+    ws.append(headers)
 
-            ws.cell(current_row, time_col).value = format_time_only(record.get("Pickup Time", ""))
-            ws.cell(current_row, tt4_col).value = record.get("TT4", "")
+    mg_by_load = {
+        normalize_load_number(record.get("load")): record
+        for record in mg_records
+        if normalize_load_number(record.get("load"))
+    }
 
-            style_load_row(ws, current_row, board_columns)
+    opendock_loads = set()
 
-            current_row += 1
+    for record in opendock_records:
+        load_number = record.get("load", "")
+        opendock_loads.add(load_number)
 
-    last_output_row = current_row - 1
+        mg = mg_by_load.get(load_number)
 
-    if last_output_row >= START_ROW:
-        apply_borders_to_range(ws, START_ROW, last_output_row)
+        if not mg:
+            ws.append([
+                load_number,
+                record.get("appt_date", ""),
+                record.get("appt_time", ""),
+                "",
+                "",
+                record.get("carrier", ""),
+                "",
+                record.get("load_type", ""),
+                "",
+                0,
+                0,
+                "Missing in MG report",
+            ])
+            continue
 
-    old_last_row = find_last_used_board_row(ws, START_ROW)
+        status_parts = []
 
-    if old_last_row > last_output_row:
-        columns_to_clear = [
-            load_col,
-            customer_col,
-            carrier_col,
-            time_col,
-            tt4_col,
-        ]
+        if mg.get("appt_date") and record.get("appt_date") and mg.get("appt_date") != record.get("appt_date"):
+            status_parts.append("Date mismatch")
 
-        if type_col:
-            columns_to_clear.append(type_col)
+        if mg.get("appt_time") and record.get("appt_time") and mg.get("appt_time") != record.get("appt_time"):
+            status_parts.append("Time mismatch")
 
-        if cases_label_col:
-            columns_to_clear.append(cases_label_col + 1)
+        if not mg.get("customer"):
+            status_parts.append("Customer missing from MG")
 
-        if qty_label_col:
-            columns_to_clear.append(qty_label_col + 1)
+        status = "Matched" if not status_parts else " / ".join(status_parts)
 
-        for row in range(last_output_row + 1, old_last_row + 1):
-            for col in sorted(set(columns_to_clear)):
-                ws.cell(row, col).value = None
+        ws.append([
+            load_number,
+            record.get("appt_date", ""),
+            record.get("appt_time", ""),
+            mg.get("appt_date", ""),
+            mg.get("appt_time", ""),
+            record.get("carrier", ""),
+            mg.get("carrier", ""),
+            record.get("load_type", ""),
+            mg.get("customer", ""),
+            mg.get("actual_weight", 0),
+            mg.get("actual_quantity", 0),
+            status,
+        ])
 
-    clear_extra_output_columns(ws, START_ROW)
+    for mg_load, mg in mg_by_load.items():
+        if mg_load not in opendock_loads:
+            ws.append([
+                mg_load,
+                "",
+                "",
+                mg.get("appt_date", ""),
+                mg.get("appt_time", ""),
+                "",
+                mg.get("carrier", ""),
+                "",
+                mg.get("customer", ""),
+                mg.get("actual_weight", 0),
+                mg.get("actual_quantity", 0),
+                "Missing in Opendock outbound report",
+            ])
 
-    ws.column_dimensions[get_column_letter(load_col)].width = 14
-    ws.column_dimensions[get_column_letter(customer_col)].width = 52
-    ws.column_dimensions[get_column_letter(carrier_col)].width = 30
-    ws.column_dimensions[get_column_letter(time_col)].width = 12
-    ws.column_dimensions[get_column_letter(tt4_col)].width = 12
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
 
-    if type_col:
-        ws.column_dimensions[get_column_letter(type_col)].width = 18
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
 
-    ws.freeze_panes = f"A{START_ROW}"
+    for column in range(1, ws.max_column + 1):
+        ws.column_dimensions[get_column_letter(column)].width = 20
+
+    ws.column_dimensions["I"].width = 55
+    ws.column_dimensions["L"].width = 35
+
+    ws.freeze_panes = "A2"
+
+
+def format_output_workbook(wb):
+    for sheet_name in [OPENDOCK_SHEET, MG_REPORT_SHEET]:
+        if sheet_name not in wb.sheetnames:
+            continue
+
+        ws = wb[sheet_name]
+
+        for col in range(1, ws.max_column + 1):
+            letter = get_column_letter(col)
+
+            if sheet_name == MG_REPORT_SHEET and letter in ["D", "E"]:
+                ws.column_dimensions[letter].width = 55
+            else:
+                ws.column_dimensions[letter].width = 18
+
+        try:
+            ws.freeze_panes = "A2"
+        except Exception:
+            pass
+
+
+def populate_template(template_bytes, opendock_records, mg_records):
+    wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+
+    validate_template(wb)
+
+    populate_opendock_sheet(wb, opendock_records)
+    populate_mg_report_sheet(wb, mg_records)
+    write_dispatch_load_count(wb, opendock_records)
+    add_match_report_sheet(wb, opendock_records, mg_records)
+    format_output_workbook(wb)
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
 
-    return (
-        output.getvalue(),
-        added_records,
-        skipped_duplicates,
-        final_records,
-        report_match_issues
-    )
+    return output.getvalue()
 
 
 # ============================================================
@@ -1921,44 +1179,38 @@ def populate_board(
 # ============================================================
 
 st.set_page_config(
-    page_title="MG Manifest Matcher + Excel Board Builder",
+    page_title="MG + Opendock Worksheet Populator",
     layout="wide"
 )
 
-st.title("MG Manifest Matcher + Excel Board Builder")
+st.title("MG + Opendock Worksheet Populator")
 
 st.write(
-    "Upload the two MG reports, the Excel board, and the appointments Excel. "
-    "The app will first build the matched manifest packet, then use that matched packet "
-    "to populate the Excel board."
+    "Upload the MG Loading/Shipping reports, the Excel template, and the Opendock report. "
+    "The app will populate only the OPENDOCK and MG REPORT worksheets. "
+    "The DISPATCH SHEET formulas will do the rest."
 )
 
 st.subheader("Step 1 - Upload all inputs")
 
 mg_files = st.file_uploader(
-    "Upload the two MG report files: Loading Manifest and Shipping Manifest. PDFs or ZIPs are accepted.",
+    "Upload MG Loading Manifest and Shipping Manifest. PDFs or ZIPs are accepted.",
     type=["pdf", "zip"],
     accept_multiple_files=True
 )
 
-excel_board_file = st.file_uploader(
-    "Upload existing Excel Board",
+excel_template_file = st.file_uploader(
+    "Upload Excel template with OPENDOCK, MG REPORT, and DISPATCH SHEET",
     type=["xlsx"]
 )
 
-appointments_file = st.file_uploader(
-    "Upload Appointments Excel",
+opendock_file = st.file_uploader(
+    "Upload Opendock report",
     type=["xlsx"]
 )
 
-with st.expander("TT4 settings"):
-    st.write("The manifest does not clearly show a TT4 field. This app flags TT4 by rules.")
-    st.write(f"TT4 for Canada loads: {TT4_FOR_CANADA}")
-    st.write("Extra customer keywords requiring TT4:")
-    st.write(TT4_CUSTOMER_KEYWORDS if TT4_CUSTOMER_KEYWORDS else "No extra keywords added.")
-
-if mg_files and excel_board_file and appointments_file:
-    if st.button("Build matched packet and update Excel board"):
+if mg_files and excel_template_file and opendock_file:
+    if st.button("Build populated workbook"):
         try:
             with st.spinner("Building matched manifest packet from MG reports..."):
                 matched_pdf_bytes, matched_summary = build_matched_packet(mg_files)
@@ -1978,107 +1230,64 @@ if mg_files and excel_board_file and appointments_file:
                 mime="application/pdf"
             )
 
-            with st.spinner("Reading appointments Excel..."):
-                appointment_lookup = parse_appointments_excel(appointments_file.read())
+            with st.spinner("Reading Opendock report and keeping only Outbound rows..."):
+                opendock_records, opendock_summary = parse_opendock_excel(
+                    opendock_file.read()
+                )
 
-            total_appointment_loads = sum(len(rows) for rows in appointment_lookup.values())
-            st.success(f"Loaded {total_appointment_loads} appointment rows from the appointments Excel.")
+            with st.spinner("Parsing matched MG packet..."):
+                mg_records, duplicate_pdf_records = parse_manifest_pdf(
+                    matched_pdf_bytes
+                )
 
-            with st.spinner("Parsing matched manifest packet..."):
-                pdf_records, duplicate_pdf_records = parse_manifest_pdf(matched_pdf_bytes)
+            st.success("Source files parsed successfully.")
 
-            if not pdf_records:
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric("Opendock Outbound Rows", opendock_summary["outbound_rows_loaded"])
+            c2.metric("Inbound Rows Skipped", opendock_summary["inbound_rows_skipped"])
+            c3.metric("MG Loads Found", len(mg_records))
+            c4.metric("Duplicate MG Loads", len(duplicate_pdf_records))
+
+            if opendock_summary["duplicate_outbound_loads"]:
                 st.warning(
-                    "No loading manifest records were found in the matched PDF. "
-                    "The app will still add appointment loads, but they will be flagged as missing from PDF."
-                )
-            else:
-                st.success(f"Found {len(pdf_records)} loads in the matched PDF.")
-
-            with st.spinner("Updating Excel board..."):
-                (
-                    populated_excel,
-                    added_records,
-                    skipped_duplicates,
-                    final_sorted_records,
-                    report_match_issues
-                ) = populate_board(
-                    excel_board_file.read(),
-                    pdf_records,
-                    appointment_lookup
+                    "Duplicate outbound loads in Opendock: "
+                    + ", ".join(opendock_summary["duplicate_outbound_loads"])
                 )
 
-            st.success("Excel board created successfully.")
+            if duplicate_pdf_records:
+                st.warning("Duplicate loads found inside MG PDF.")
+                st.dataframe(duplicate_pdf_records, use_container_width=True)
 
-            st.subheader("Loads added to Excel")
-
-            if added_records:
-                preview_added = []
-
-                for record in added_records:
-                    preview_added.append({
-                        "Load": record.get("Load", ""),
-                        "Customer": record.get("Customer", ""),
-                        "Load Type": record.get("Load Type", ""),
-                        "Carrier": record.get("Carrier", ""),
-                        "Appointment Date": record.get("Appointment Date", ""),
-                        "Appointment Time": record.get("Appointment Time", ""),
-                        "PDF Date": record.get("PDF Date", ""),
-                        "PDF Time": record.get("PDF Time", ""),
-                        "Time Used on Board": record.get("Pickup Time", ""),
-                        "TT4": record.get("TT4", ""),
-                        "Appointment Match": record.get("Appointment Match", ""),
-                        "Report Match Status": record.get("Report Match Status", ""),
-                    })
-
-                st.dataframe(preview_added, use_container_width=True)
-            else:
-                st.info("No new loads were added.")
-
-            all_skipped = skipped_duplicates + duplicate_pdf_records
-
-            st.subheader("Duplicate / skipped loads")
-
-            if all_skipped:
-                st.warning(f"Skipped {len(all_skipped)} duplicate or invalid loads.")
-                st.dataframe(all_skipped, use_container_width=True)
-            else:
-                st.success("No duplicates found.")
-
-            st.subheader("Report match issues")
-
-            if report_match_issues:
-                st.warning(
-                    f"{len(report_match_issues)} loads were flagged because the PDF was missing the load or the date/time did not match."
+            with st.spinner("Populating OPENDOCK and MG REPORT worksheets..."):
+                populated_workbook = populate_template(
+                    excel_template_file.read(),
+                    opendock_records,
+                    mg_records
                 )
-                st.dataframe(report_match_issues, use_container_width=True)
+
+            st.success("Workbook populated successfully.")
+
+            st.subheader("Opendock worksheet preview")
+            st.dataframe(opendock_records, use_container_width=True)
+
+            st.subheader("MG Report worksheet preview")
+            st.dataframe(mg_records, use_container_width=True)
+
+            missing_customer_records = [
+                record for record in mg_records
+                if not record.get("customer", "")
+            ]
+
+            if missing_customer_records:
+                st.warning(f"{len(missing_customer_records)} MG loads have no customer detected.")
+                st.dataframe(missing_customer_records, use_container_width=True)
             else:
-                st.success("Every appointment load matched the PDF by load number, date, and time.")
-
-            st.subheader("Final sorted board preview")
-
-            final_preview = []
-
-            for record in final_sorted_records:
-                final_preview.append({
-                    "Load": record.get("Load", ""),
-                    "Customer": record.get("Customer", ""),
-                    "Load Type": record.get("Load Type", ""),
-                    "Carrier": record.get("Carrier", ""),
-                    "Appointment Date": record.get("Appointment Date", ""),
-                    "Appointment Time": record.get("Appointment Time", ""),
-                    "PDF Date": record.get("PDF Date", ""),
-                    "PDF Time": record.get("PDF Time", ""),
-                    "Time Used on Board": record.get("Pickup Time", ""),
-                    "TT4": record.get("TT4", ""),
-                    "Report Match Status": record.get("Report Match Status", ""),
-                })
-
-            st.dataframe(final_preview, use_container_width=True)
+                st.success("Customer populated for all MG loads.")
 
             st.download_button(
-                label="Download updated and sorted Excel board",
-                data=populated_excel,
+                label="Download populated workbook",
+                data=populated_workbook,
                 file_name=OUTPUT_FILE_NAME,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
@@ -2088,4 +1297,4 @@ if mg_files and excel_board_file and appointments_file:
             st.exception(e)
 
 else:
-    st.info("Upload the two MG reports, the Excel board, and the appointments Excel to start.")
+    st.info("Upload the MG reports, Excel template, and Opendock report to start.")
