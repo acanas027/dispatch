@@ -1,4 +1,3 @@
-Dispatch Auto app
 
 import os
 import re
