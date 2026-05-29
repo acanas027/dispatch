@@ -1,9 +1,7 @@
-
 import os
 import re
 import io
 import zipfile
-import tempfile
 from copy import copy
 from datetime import datetime, date, time
 from collections import defaultdict
@@ -199,6 +197,73 @@ def clear_range_values(ws, start_row, end_row, columns):
             ws.cell(row, col).value = None
 
 
+def capture_row_template(ws, source_row, max_col):
+    template = {
+        "height": ws.row_dimensions[source_row].height,
+        "cells": []
+    }
+
+    for col in range(1, max_col + 1):
+        cell = ws.cell(source_row, col)
+        template["cells"].append({
+            "col": col,
+            "coordinate": cell.coordinate,
+            "value": cell.value,
+            "font": copy(cell.font),
+            "fill": copy(cell.fill),
+            "border": copy(cell.border),
+            "alignment": copy(cell.alignment),
+            "number_format": cell.number_format,
+            "protection": copy(cell.protection),
+        })
+
+    return template
+
+
+def apply_row_template(ws, row_template, target_row, copy_values=True):
+    ws.row_dimensions[target_row].height = row_template["height"]
+
+    for item in row_template["cells"]:
+        col = item["col"]
+        target_cell = ws.cell(target_row, col)
+
+        target_cell.font = copy(item["font"])
+        target_cell.fill = copy(item["fill"])
+        target_cell.border = copy(item["border"])
+        target_cell.alignment = copy(item["alignment"])
+        target_cell.number_format = item["number_format"]
+        target_cell.protection = copy(item["protection"])
+
+        if copy_values:
+            value = item["value"]
+
+            if isinstance(value, str) and value.startswith("="):
+                target_cell.value = Translator(
+                    value,
+                    origin=item["coordinate"]
+                ).translate_formula(target_cell.coordinate)
+            else:
+                target_cell.value = value
+
+
+def clear_dispatch_area(ws, start_row, end_row, max_col):
+    for row in range(start_row, end_row + 1):
+        for col in range(1, max_col + 1):
+            ws.cell(row, col).value = None
+
+
+def write_day_header(ws, row, date_text, load_count, total_cases, max_col):
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row, col)
+        cell.value = None
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.cell(row, 2).value = f"{date_text} | LOADS: {load_count} | CASES: {int(round(total_cases, 0))}"
+    ws.row_dimensions[row].height = 22
+
+
 def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
     """
     Accepts a Streamlit UploadedFile that is either a .pdf or a .zip.
@@ -211,7 +276,6 @@ def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
     if uploaded_file.name.lower().endswith(".pdf"):
         return raw
 
-    # It's a ZIP — find and merge all PDFs inside
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         pdf_names = sorted(
             name for name in z.namelist()
@@ -226,8 +290,8 @@ def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
         if len(pdf_names) == 1:
             return z.read(pdf_names[0])
 
-        # Merge multiple PDFs from the zip into one
         writer = PdfWriter()
+
         for name in pdf_names:
             reader = PdfReader(io.BytesIO(z.read(name)))
             for page in reader.pages:
@@ -236,19 +300,23 @@ def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
         out = io.BytesIO()
         writer.write(out)
         out.seek(0)
+
         return out.read()
 
 
 # ============================================================
-# PDF MANIFEST MATCHER (from report.py)
+# PDF MANIFEST MATCHER
 # ============================================================
 
 def sample_text_from_bytes(pdf_bytes, pages=5):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     text = ""
+
     for i in range(min(pages, len(doc))):
         text += doc[i].get_text("text") + "\n"
+
     doc.close()
+
     return text.upper()
 
 
@@ -263,8 +331,10 @@ def parse_pu_appt_from_text(text):
         text,
         re.I
     )
+
     if not m:
         return None
+
     try:
         return datetime.strptime(m.group(1) + " " + m.group(2), "%m/%d/%Y %H:%M")
     except Exception:
@@ -275,49 +345,55 @@ def group_pages_by_load_from_bytes(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     groups = {}
     current_load = None
+
     for i in range(len(doc)):
         text = doc[i].get_text("text")
         found_load = parse_load_from_text(text)
+
         if found_load:
             current_load = found_load
+
             if current_load not in groups:
-                groups[current_load] = {"pages": [], "text": ""}
+                groups[current_load] = {
+                    "pages": [],
+                    "text": ""
+                }
+
         if current_load:
             groups[current_load]["pages"].append(i)
             groups[current_load]["text"] += "\n" + text
+
     doc.close()
+
     return groups
 
 
 def build_matched_pdf_bytes(loading_bytes, shipping_bytes):
-    """
-    Matches loading and shipping manifest PDFs by load number,
-    sorts by PU APPT date/time, and returns the merged PDF as bytes.
-    """
     loading_text_sample = sample_text_from_bytes(loading_bytes)
     shipping_text_sample = sample_text_from_bytes(shipping_bytes)
 
-    # Validate which is which (allow either order from user)
     if "LOADING MANIFEST" in loading_text_sample and "SHIPPING MANIFEST" not in loading_text_sample:
-        pass  # correct assignment
+        pass
     elif "LOADING MANIFEST" in shipping_text_sample and "SHIPPING MANIFEST" not in shipping_text_sample:
         loading_bytes, shipping_bytes = shipping_bytes, loading_bytes
     else:
-        # Fall back: just use as-is
         pass
 
     loading_groups = group_pages_by_load_from_bytes(loading_bytes)
     shipping_groups = group_pages_by_load_from_bytes(shipping_bytes)
 
     all_loads = sorted(
-        set(loading_groups.keys()) | set(shipping_groups.keys())
+        set(loading_groups.keys()) |
+        set(shipping_groups.keys())
     )
 
     records = []
+
     for load in all_loads:
         lt = loading_groups.get(load, {}).get("text", "")
         st_text = shipping_groups.get(load, {}).get("text", "")
         dt = parse_pu_appt_from_text(lt or st_text)
+
         records.append({
             "load": load,
             "datetime": dt,
@@ -341,6 +417,7 @@ def build_matched_pdf_bytes(loading_bytes, shipping_bytes):
     for r in records:
         for page_num in r["loading_pages"]:
             writer.add_page(loading_reader.pages[page_num])
+
         for page_num in r["shipping_pages"]:
             writer.add_page(shipping_reader.pages[page_num])
 
@@ -379,12 +456,16 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
     direction_col = find_col(headers, ["Direction"])
 
     missing = []
+
     if not load_col:
         missing.append("Load Reference")
+
     if not appt_date_col:
         missing.append("Appt Date")
+
     if not appt_time_col:
         missing.append("Appt Time")
+
     if not carrier_col:
         missing.append("Carrier Company")
 
@@ -397,16 +478,19 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
 
     for row in range(2, ws.max_row + 1):
         load_number = normalize_load_number(ws.cell(row, load_col).value)
+
         if not load_number:
             continue
 
         direction = clean_spaces(ws.cell(row, direction_col).value) if direction_col else ""
+
         if direction and direction.upper() != "OUTBOUND":
             skipped_inbound.append(load_number)
             continue
 
         appt_date = normalize_date(ws.cell(row, appt_date_col).value)
         appt_time = normalize_time(ws.cell(row, appt_time_col).value)
+
         duplicate_tracker[load_number] += 1
 
         record = {
@@ -424,11 +508,15 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
             "direction": direction,
             "source_row": row,
         }
+
         records.append(record)
 
     records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
 
-    duplicates = [load for load, count in duplicate_tracker.items() if count > 1]
+    duplicates = [
+        load for load, count in duplicate_tracker.items()
+        if count > 1
+    ]
 
     summary = {
         "outbound_rows_loaded": len(records),
@@ -445,16 +533,20 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
 
 def extract_pdf_pages(pdf_bytes: bytes) -> list[str]:
     pages = []
+
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page in doc:
             pages.append(page.get_text("text"))
+
     return pages
 
 
 def extract_mg_load_number(text: str) -> str:
     match = re.search(r"\bLOAD:\s*(?:LD)?\s*([A-Z0-9]+)", text, re.IGNORECASE)
+
     if not match:
         return ""
+
     return normalize_load_number(match.group(1))
 
 
@@ -464,19 +556,26 @@ def extract_mg_pu_appt(text: str) -> tuple[str, str]:
         text,
         re.IGNORECASE,
     )
+
     if not match:
         return "", ""
+
     return normalize_date(match.group(1)), normalize_time(match.group(2))
 
 
 def extract_mg_carrier(text: str) -> str:
     match = re.search(r"\bCARR/SCT\s+TR:\s*(.+)", text, re.IGNORECASE)
+
     if not match:
         return ""
+
     carrier = clean_spaces(match.group(1).splitlines()[0])
+
     if carrier.upper().startswith("CPUC"):
         return "CPUC"
+
     carrier = re.sub(r"^[A-Z0-9]{3,6}\s+", "", carrier).strip()
+
     return clean_spaces(carrier)
 
 
@@ -486,16 +585,21 @@ def extract_mg_totals(text: str) -> tuple[float, float]:
         text,
         re.IGNORECASE,
     )
+
     if not matches:
         return 0, 0
+
     weight, _volume, quantity = matches[-1]
+
     return parse_number(weight), parse_number(quantity)
 
 
 def clean_customer_name(value: str) -> str:
     value = clean_spaces(value)
+
     if not value:
         return ""
+
     value = re.sub(r"^\d{5,12}\s*/?\s*", "", value)
     value = re.sub(r"^\d{5,12}\s+", "", value)
     value = re.sub(r"\s+TK$", "", value, flags=re.IGNORECASE)
@@ -506,13 +610,25 @@ def clean_customer_name(value: str) -> str:
         "TOPEKA DISTRIBUTION CENTER",
         "3121 SE 6TH AVE",
         "TOPEKA, KS",
-        "PH:", "FX:",
-        "PICKUP TOTAL", "DROP TOTAL", "OUTBOUND TOTALS", "TOTAL MILES",
-        "PAGE ", "ORDER#", "WEIGHT", "CUSTID", "CUST", "NAME",
-        "LOCATION", "DATE", "TIME",
+        "PH:",
+        "FX:",
+        "PICKUP TOTAL",
+        "DROP TOTAL",
+        "OUTBOUND TOTALS",
+        "TOTAL MILES",
+        "PAGE ",
+        "ORDER#",
+        "WEIGHT",
+        "CUSTID",
+        "CUST",
+        "NAME",
+        "LOCATION",
+        "DATE",
+        "TIME",
     ]
 
     upper_value = value.upper()
+
     for bad in bad_fragments:
         if bad in upper_value:
             return ""
@@ -523,6 +639,7 @@ def clean_customer_name(value: str) -> str:
 
     if re.fullmatch(r"[\d\.\,\-]+", value):
         return ""
+
     if len(re.sub(r"[^A-Za-z]", "", value)) < 2:
         return ""
 
@@ -531,41 +648,58 @@ def clean_customer_name(value: str) -> str:
 
 def extract_customers_from_loading_manifest(text: str) -> list[str]:
     customers = []
+
     for raw_line in text.splitlines():
         line = clean_spaces(raw_line)
+
         match = re.match(r"^[2-9]\s+(.+)$", line)
+
         if not match:
             continue
+
         candidate = clean_customer_name(match.group(1))
+
         if not candidate:
             continue
+
         if candidate not in customers:
             customers.append(candidate)
+
     return customers
 
 
 def get_shipping_pickup_section(text: str) -> str:
     if "SHIPPING MANIFEST" not in text.upper():
         return ""
+
     if "Pickup TOTAL" in text:
         return text.split("Pickup TOTAL", 1)[0]
+
     if "PICKUP TOTAL" in text.upper():
         return re.split(r"PICKUP\s+TOTAL", text, flags=re.IGNORECASE)[0]
+
     return text
 
 
 def flush_customer_parts(parts, customers):
     cleaned_parts = []
+
     for part in parts:
         part = clean_customer_name(part)
+
         if not part:
             continue
+
         if part.startswith("/"):
             continue
+
         cleaned_parts.append(part)
+
     if not cleaned_parts:
         return
+
     customer = clean_spaces(" ".join(cleaned_parts))
+
     customer = customer.replace("SPRINGFIEL D", "SPRINGFIELD")
     customer = customer.replace("GWILLIMBUR Y", "GWILLIMBURY")
     customer = customer.replace("DISTRIBUTO RS", "DISTRIBUTORS")
@@ -574,12 +708,14 @@ def flush_customer_parts(parts, customers):
     customer = customer.replace("SOWESTERN ONT", "SW ONTARIO")
     customer = customer.replace("SOUTHWESTERN ONT", "SW ONTARIO")
     customer = clean_spaces(customer)
+
     if customer and customer not in customers:
         customers.append(customer)
 
 
 def extract_customers_from_shipping_manifest(text: str) -> list[str]:
     pickup_text = get_shipping_pickup_section(text)
+
     if not pickup_text:
         return []
 
@@ -594,10 +730,30 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
     in_order = False
 
     stop_words = [
-        "RESERS FINE FOOD", "RESER'S - TK", "SHIPPING MANIFEST", "PRINTED BY",
-        "LOAD:", "PU APPT", "CARR/SCT", "DRIVER", "TRACTOR", "PRO:",
-        "LOCATION", "ORDER#", "WEIGHT", "VOL", "PCS", "PLT", "CUSTID",
-        "CUST", "NAME", "TOPEKA", "3121 SE", "PH:", "APPT:", "PICKUP TOTAL",
+        "RESERS FINE FOOD",
+        "RESER'S - TK",
+        "SHIPPING MANIFEST",
+        "PRINTED BY",
+        "LOAD:",
+        "PU APPT",
+        "CARR/SCT",
+        "DRIVER",
+        "TRACTOR",
+        "PRO:",
+        "LOCATION",
+        "ORDER#",
+        "WEIGHT",
+        "VOL",
+        "PCS",
+        "PLT",
+        "CUSTID",
+        "CUST",
+        "NAME",
+        "TOPEKA",
+        "3121 SE",
+        "PH:",
+        "APPT:",
+        "PICKUP TOTAL",
     ]
 
     for line in lines:
@@ -606,13 +762,17 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
         if re.match(r"^\d{8,12}-\d{3}", line):
             if current_parts:
                 flush_customer_parts(current_parts, customers)
+
             current_parts = []
             in_order = True
+
             slash_match = re.search(r"\b[A-Z0-9]{1,10}/\s*(.+)$", line)
+
             if slash_match:
                 possible = clean_customer_name(slash_match.group(1))
                 if possible:
                     current_parts.append(possible)
+
             continue
 
         if not in_order:
@@ -621,6 +781,7 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
         if any(word in upper_line for word in stop_words):
             if current_parts:
                 flush_customer_parts(current_parts, customers)
+
             current_parts = []
             in_order = False
             continue
@@ -628,24 +789,31 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
         if line.startswith("/"):
             if current_parts:
                 flush_customer_parts(current_parts, customers)
+
             current_parts = []
             in_order = False
             continue
 
         if re.fullmatch(r"[\d\.\,\-]+", line):
             continue
+
         if re.fullmatch(r"\d{2,12}/?", line):
             continue
+
         if re.match(r"^\d{2,12}/", line):
             after_slash = line.split("/", 1)[1].strip()
             possible = clean_customer_name(after_slash)
+
             if possible:
                 current_parts.append(possible)
+
             continue
+
         if re.fullmatch(r"/?[A-Z0-9\-\.\# ]{3,25}", line) and not re.search(r"[AEIOUaeiou]", line):
             continue
 
         possible = clean_customer_name(line)
+
         if possible:
             current_parts.append(possible)
 
@@ -653,13 +821,17 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
         flush_customer_parts(current_parts, customers)
 
     final_customers = []
+
     for customer in customers:
         customer = clean_spaces(customer)
+
         if not customer:
             continue
+
         if len(customer) > 70:
             words = customer.split()
             customer = " ".join(words[:8])
+
         if customer not in final_customers:
             final_customers.append(customer)
 
@@ -668,11 +840,21 @@ def extract_customers_from_shipping_manifest(text: str) -> list[str]:
 
 def is_internal_transfer_customer(customer: str) -> bool:
     upper_customer = customer.upper()
+
     internal_terms = [
-        "RESER'S -", "RESERS -", "DISTRIBUTION CENTER", "CENTURY DISTRIBUTION",
-        "HALIFAX DISTRIBUTION", "REED TRUCKING", "BOZEL TRANSFER",
-        "REET -", "BOZL -", "NC RESER", "DC RESER",
+        "RESER'S -",
+        "RESERS -",
+        "DISTRIBUTION CENTER",
+        "CENTURY DISTRIBUTION",
+        "HALIFAX DISTRIBUTION",
+        "REED TRUCKING",
+        "BOZEL TRANSFER",
+        "REET -",
+        "BOZL -",
+        "NC RESER",
+        "DC RESER",
     ]
+
     return any(term in upper_customer for term in internal_terms)
 
 
@@ -685,16 +867,22 @@ def extract_mg_customers(combined_text: str, loading_text: str, shipping_text: s
     else:
         selected = loading_customers
 
-    useful_loading = [c for c in loading_customers if not is_internal_transfer_customer(c)]
+    useful_loading = [
+        c for c in loading_customers
+        if not is_internal_transfer_customer(c)
+    ]
 
     if useful_loading and not shipping_customers:
         selected = useful_loading
 
     final_customers = []
+
     for customer in selected:
         customer = clean_customer_name(customer)
+
         if not customer:
             continue
+
         if customer not in final_customers:
             final_customers.append(customer)
 
@@ -707,16 +895,28 @@ def parse_single_mg_pdf(pdf_bytes: bytes, source_name: str = "") -> list[dict]:
 
     for page_text in pages:
         load_number = extract_mg_load_number(page_text)
+
         if load_number:
             pages_by_load[load_number].append(page_text)
 
     records = []
 
     for load_number, load_pages in pages_by_load.items():
-        loading_pages = [p for p in load_pages if "LOADING MANIFEST" in p.upper()]
-        shipping_pages = [p for p in load_pages if "SHIPPING MANIFEST" in p.upper()]
+        loading_pages = [
+            p for p in load_pages
+            if "LOADING MANIFEST" in p.upper()
+        ]
 
-        loading_text = "\n".join(loading_pages) if loading_pages else "\n".join(load_pages)
+        shipping_pages = [
+            p for p in load_pages
+            if "SHIPPING MANIFEST" in p.upper()
+        ]
+
+        if loading_pages:
+            loading_text = "\n".join(loading_pages)
+        else:
+            loading_text = "\n".join(load_pages)
+
         shipping_text = "\n".join(shipping_pages)
         combined_text = loading_text + "\n" + shipping_text
 
@@ -740,32 +940,37 @@ def parse_single_mg_pdf(pdf_bytes: bytes, source_name: str = "") -> list[dict]:
 
 
 def parse_mg_pdf_bytes(pdf_bytes: bytes, source_name: str = "") -> tuple[list[dict], dict]:
-    """Parse one or more MG PDFs from a list of (bytes, name) tuples or a single (bytes, name)."""
     all_records = parse_single_mg_pdf(pdf_bytes, source_name)
     duplicate_mg_loads = []
     records_by_load = {}
 
     for record in all_records:
         load = normalize_load_number(record.get("load"))
+
         if not load:
             continue
+
         if load not in records_by_load:
             records_by_load[load] = record
         else:
             duplicate_mg_loads.append(load)
+
             existing = records_by_load[load]
+
             existing_score = (
                 bool(existing.get("consignee")) +
                 bool(existing.get("appt_date")) +
                 bool(existing.get("appt_time")) +
                 bool(existing.get("actual_quantity"))
             )
+
             new_score = (
                 bool(record.get("consignee")) +
                 bool(record.get("appt_date")) +
                 bool(record.get("appt_time")) +
                 bool(record.get("actual_quantity"))
             )
+
             if new_score > existing_score:
                 records_by_load[load] = record
 
@@ -792,27 +997,34 @@ def parse_multiple_mg_pdfs(uploaded_files) -> tuple[list[dict], dict]:
         all_records.extend(records)
 
     records_by_load = {}
+
     for record in all_records:
         load = normalize_load_number(record.get("load"))
+
         if not load:
             continue
+
         if load not in records_by_load:
             records_by_load[load] = record
         else:
             duplicate_mg_loads.append(load)
+
             existing = records_by_load[load]
+
             existing_score = (
                 bool(existing.get("consignee")) +
                 bool(existing.get("appt_date")) +
                 bool(existing.get("appt_time")) +
                 bool(existing.get("actual_quantity"))
             )
+
             new_score = (
                 bool(record.get("consignee")) +
                 bool(record.get("appt_date")) +
                 bool(record.get("appt_time")) +
                 bool(record.get("actual_quantity"))
             )
+
             if new_score > existing_score:
                 records_by_load[load] = record
 
@@ -834,19 +1046,25 @@ def parse_multiple_mg_pdfs(uploaded_files) -> tuple[list[dict], dict]:
 
 def validate_template(wb):
     missing = []
+
     for sheet_name in TEMPLATE_REQUIRED_SHEETS:
         if sheet_name not in wb.sheetnames:
             missing.append(sheet_name)
+
     if missing:
         raise ValueError("Template is missing these sheets: " + ", ".join(missing))
 
 
 def populate_opendock_sheet(wb, opendock_records):
     ws = wb[OPENDOCK_SHEET]
+
     max_row = max(ws.max_row, OPENDOCK_START_ROW + MAX_OPENDOCK_ROWS)
+
     clear_range_values(ws, OPENDOCK_START_ROW, max_row, [1, 2, 3, 4, 5, 6, 7])
+
     for index, record in enumerate(opendock_records, start=OPENDOCK_START_ROW):
         copy_row_format(ws, OPENDOCK_START_ROW, index, 7)
+
         ws.cell(index, 1).value = record.get("load", "")
         ws.cell(index, 2).value = record.get("arrival_date", "")
         ws.cell(index, 3).value = record.get("arrival_time", "")
@@ -858,10 +1076,14 @@ def populate_opendock_sheet(wb, opendock_records):
 
 def populate_mg_report_sheet(wb, mg_records):
     ws = wb[MG_REPORT_SHEET]
+
     max_row = max(ws.max_row, MG_REPORT_START_ROW + MAX_MG_REPORT_ROWS)
+
     clear_range_values(ws, MG_REPORT_START_ROW, max_row, [1, 2, 3, 4])
+
     for index, record in enumerate(mg_records, start=MG_REPORT_START_ROW):
         copy_row_format(ws, MG_REPORT_START_ROW, index, 4)
+
         ws.cell(index, 1).value = record.get("load", "")
         ws.cell(index, 2).value = record.get("actual_weight", 0)
         ws.cell(index, 3).value = record.get("actual_quantity", 0)
@@ -870,7 +1092,15 @@ def populate_mg_report_sheet(wb, mg_records):
 
 def populate_dispatch_sheet(wb, opendock_records, mg_records):
     ws = wb[DISPATCH_SHEET]
+
     notes_col = find_dispatch_notes_col(ws, header_row=2)
+    max_output_col = max(13, notes_col)
+
+    row_template = capture_row_template(
+        ws,
+        DISPATCH_START_ROW,
+        max_output_col
+    )
 
     mg_by_load = {
         normalize_load_number(record.get("load")): record
@@ -879,82 +1109,162 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records):
     }
 
     max_row = max(ws.max_row, DISPATCH_START_ROW + MAX_DISPATCH_ROWS)
-    clear_range_values(ws, DISPATCH_START_ROW, max_row, [2, 4, 5, 7, notes_col])
 
-    for row in range(DISPATCH_START_ROW, DISPATCH_START_ROW + MAX_DISPATCH_ROWS):
-        copy_row_format(ws, DISPATCH_START_ROW, row, max(13, notes_col))
+    clear_dispatch_area(
+        ws,
+        DISPATCH_START_ROW,
+        max_row,
+        max_output_col
+    )
 
+    grouped_by_date = []
+
+    for record in opendock_records:
+        date_text = record.get("appt_date", "") or record.get("arrival_date", "") or "NO DATE"
+
+        if not grouped_by_date or grouped_by_date[-1]["date"] != date_text:
+            grouped_by_date.append({
+                "date": date_text,
+                "records": []
+            })
+
+        grouped_by_date[-1]["records"].append(record)
+
+    current_row = DISPATCH_START_ROW
     loads_written = 0
 
-    for index, record in enumerate(opendock_records, start=DISPATCH_START_ROW):
-        if index > DISPATCH_START_ROW + MAX_DISPATCH_ROWS:
+    for day_group in grouped_by_date:
+        date_text = day_group["date"]
+        day_records = day_group["records"]
+
+        day_cases = 0
+
+        for record in day_records:
+            load_number = normalize_load_number(record.get("load"))
+            matched_mg = mg_by_load.get(load_number)
+
+            if matched_mg:
+                day_cases += parse_number(matched_mg.get("actual_quantity", 0))
+
+        if current_row > DISPATCH_START_ROW + MAX_DISPATCH_ROWS:
             break
 
-        load_number = record.get("load", "")
-        if not load_number:
-            continue
-
-        matched_mg = mg_by_load.get(load_number)
-        notes = []
-
-        if not matched_mg:
-            notes.append("Not found in MG report")
-        else:
-            mg_date = matched_mg.get("appt_date", "")
-            mg_time = matched_mg.get("appt_time", "")
-            od_date = record.get("appt_date", "")
-            od_time = record.get("appt_time", "")
-
-            if mg_date and od_date and mg_date != od_date:
-                notes.append(f"Date mismatch: MG {mg_date}, Opendock {od_date}")
-            if mg_time and od_time and mg_time != od_time:
-                notes.append(f"Time mismatch: MG {mg_time}, Opendock {od_time}")
-            if not matched_mg.get("consignee", ""):
-                notes.append("MG customer/consignee not found")
-
-        ws.cell(index, 2).value = load_number
-        ws.cell(index, 4).value = record.get("appt_time", "")
-        ws.cell(index, 5).value = record.get("carrier", "")
-        ws.cell(index, 7).value = record.get("load_type", "")
-        ws.cell(index, notes_col).value = " | ".join(notes)
-
-        row_num = index
-        ws.cell(row_num, 3).value = f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
-        ws.cell(row_num, 6).value = f'=IFERROR(VLOOKUP(E{row_num},CARRIERS!$A:$B,2,FALSE),"")'
-        ws.cell(row_num, 8).value = (
-            f'=IF(OR(ISNUMBER(SEARCH("albertson",C{row_num})),'
-            f'ISNUMBER(SEARCH("jewel",C{row_num})),'
-            f'ISNUMBER(SEARCH("safeway",C{row_num})),'
-            f'ISNUMBER(SEARCH("sysco",C{row_num})),'
-            f'ISNUMBER(SEARCH("united supermarkets",C{row_num}))),"X","")'
+        apply_row_template(
+            ws,
+            row_template,
+            current_row,
+            copy_values=False
         )
-        ws.cell(row_num, 9).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,2,FALSE)),0)'
-        ws.cell(row_num, 10).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,3,FALSE)),0)'
-        ws.cell(row_num, 11).number_format = "0"
-        ws.cell(row_num, 12).number_format = "0"
 
-        loads_written += 1
+        write_day_header(
+            ws,
+            current_row,
+            date_text,
+            len(day_records),
+            day_cases,
+            max_output_col
+        )
+
+        current_row += 1
+
+        for record in day_records:
+            if current_row > DISPATCH_START_ROW + MAX_DISPATCH_ROWS:
+                break
+
+            apply_row_template(
+                ws,
+                row_template,
+                current_row,
+                copy_values=True
+            )
+
+            load_number = record.get("load", "")
+
+            if not load_number:
+                current_row += 1
+                continue
+
+            matched_mg = mg_by_load.get(load_number)
+
+            notes = []
+
+            if not matched_mg:
+                notes.append("Not found in MG report")
+            else:
+                mg_date = matched_mg.get("appt_date", "")
+                mg_time = matched_mg.get("appt_time", "")
+                od_date = record.get("appt_date", "")
+                od_time = record.get("appt_time", "")
+
+                if mg_date and od_date and mg_date != od_date:
+                    notes.append(f"Date mismatch: MG {mg_date}, Opendock {od_date}")
+
+                if mg_time and od_time and mg_time != od_time:
+                    notes.append(f"Time mismatch: MG {mg_time}, Opendock {od_time}")
+
+                if not matched_mg.get("consignee", ""):
+                    notes.append("MG customer/consignee not found")
+
+            row_num = current_row
+
+            ws.cell(row_num, 2).value = load_number
+            ws.cell(row_num, 4).value = record.get("appt_time", "")
+            ws.cell(row_num, 5).value = record.get("carrier", "")
+            ws.cell(row_num, 7).value = record.get("load_type", "")
+            ws.cell(row_num, notes_col).value = " | ".join(notes)
+
+            ws.cell(row_num, 3).value = f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
+            ws.cell(row_num, 6).value = f'=IFERROR(VLOOKUP(E{row_num},CARRIERS!$A:$B,2,FALSE),"")'
+            ws.cell(row_num, 8).value = (
+                f'=IF(OR(ISNUMBER(SEARCH("albertson",C{row_num})),'
+                f'ISNUMBER(SEARCH("jewel",C{row_num})),'
+                f'ISNUMBER(SEARCH("safeway",C{row_num})),'
+                f'ISNUMBER(SEARCH("sysco",C{row_num})),'
+                f'ISNUMBER(SEARCH("united supermarkets",C{row_num}))),"X","")'
+            )
+            ws.cell(row_num, 9).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,2,FALSE)),0)'
+            ws.cell(row_num, 10).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,3,FALSE)),0)'
+
+            ws.cell(row_num, 11).number_format = "0"
+            ws.cell(row_num, 12).number_format = "0"
+
+            loads_written += 1
+            current_row += 1
 
     ws["G1"] = loads_written
 
-    if opendock_records:
-        ws["C1"] = opendock_records[0].get("appt_date", "")
+    if len(grouped_by_date) == 1:
+        ws["C1"] = grouped_by_date[0]["date"]
+    elif len(grouped_by_date) > 1:
+        ws["C1"] = "Multiple Dates"
     else:
         ws["C1"] = ""
 
 
 def add_match_report_sheet(wb, opendock_records, mg_records):
     sheet_name = "MATCH REPORT"
+
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
 
     ws = wb.create_sheet(sheet_name)
 
     headers = [
-        "Load", "Opendock Date", "Opendock Time", "MG Date", "MG Time",
-        "Opendock Carrier", "MG Carrier", "Opendock Load Type",
-        "MG Customer(s)", "MG Weight", "MG Cases", "MG Source File", "Status",
+        "Load",
+        "Opendock Date",
+        "Opendock Time",
+        "MG Date",
+        "MG Time",
+        "Opendock Carrier",
+        "MG Carrier",
+        "Opendock Load Type",
+        "MG Customer(s)",
+        "MG Weight",
+        "MG Cases",
+        "MG Source File",
+        "Status",
     ]
+
     ws.append(headers)
 
     mg_by_load = {
@@ -972,8 +1282,13 @@ def add_match_report_sheet(wb, opendock_records, mg_records):
 
         if not mg:
             status = "Missing in MG report"
-            mg_date = mg_time = mg_carrier = consignee = source_file = ""
-            weight = cases = 0
+            mg_date = ""
+            mg_time = ""
+            mg_carrier = ""
+            consignee = ""
+            source_file = ""
+            weight = 0
+            cases = 0
         else:
             mg_date = mg.get("appt_date", "")
             mg_time = mg.get("appt_time", "")
@@ -984,30 +1299,43 @@ def add_match_report_sheet(wb, opendock_records, mg_records):
             source_file = mg.get("source_file", "")
 
             status_parts = []
+
             if mg_date and record.get("appt_date") and mg_date != record.get("appt_date"):
                 status_parts.append("Date mismatch")
+
             if mg_time and record.get("appt_time") and mg_time != record.get("appt_time"):
                 status_parts.append("Time mismatch")
+
             if not consignee:
                 status_parts.append("Customer missing from MG")
 
-            status = " / ".join(status_parts) if status_parts else "Matched"
+            if status_parts:
+                status = " / ".join(status_parts)
+            else:
+                status = "Matched"
 
         ws.append([
             load_number,
             record.get("appt_date", ""),
             record.get("appt_time", ""),
-            mg_date, mg_time,
+            mg_date,
+            mg_time,
             record.get("carrier", ""),
             mg_carrier,
             record.get("load_type", ""),
-            consignee, weight, cases, source_file, status,
+            consignee,
+            weight,
+            cases,
+            source_file,
+            status,
         ])
 
     for mg_load, mg in mg_by_load.items():
         if mg_load not in opendock_loads:
             ws.append([
-                mg_load, "", "",
+                mg_load,
+                "",
+                "",
                 mg.get("appt_date", ""),
                 mg.get("appt_time", ""),
                 "",
@@ -1034,6 +1362,7 @@ def add_match_report_sheet(wb, opendock_records, mg_records):
     ws.column_dimensions["I"].width = 55
     ws.column_dimensions["L"].width = 35
     ws.column_dimensions["M"].width = 35
+
     ws.freeze_panes = "A2"
 
 
@@ -1041,9 +1370,12 @@ def format_output_workbook(wb):
     for sheet_name in [DISPATCH_SHEET, OPENDOCK_SHEET, MG_REPORT_SHEET]:
         if sheet_name not in wb.sheetnames:
             continue
+
         ws = wb[sheet_name]
+
         for col in range(1, ws.max_column + 1):
             letter = get_column_letter(col)
+
             if sheet_name == DISPATCH_SHEET:
                 if letter in ["C", "E"]:
                     ws.column_dimensions[letter].width = 32
@@ -1051,13 +1383,16 @@ def format_output_workbook(wb):
                     ws.column_dimensions[letter].width = 50
                 else:
                     ws.column_dimensions[letter].width = 14
+
             elif sheet_name == OPENDOCK_SHEET:
                 ws.column_dimensions[letter].width = 18
+
             elif sheet_name == MG_REPORT_SHEET:
                 if letter == "D":
                     ws.column_dimensions[letter].width = 60
                 else:
                     ws.column_dimensions[letter].width = 18
+
         try:
             ws.freeze_panes = "A2"
         except Exception:
@@ -1066,15 +1401,18 @@ def format_output_workbook(wb):
 
 def populate_template(template_bytes: bytes, opendock_records: list[dict], mg_records: list[dict]) -> bytes:
     wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+
     validate_template(wb)
     populate_opendock_sheet(wb, opendock_records)
     populate_mg_report_sheet(wb, mg_records)
     populate_dispatch_sheet(wb, opendock_records, mg_records)
     add_match_report_sheet(wb, opendock_records, mg_records)
     format_output_workbook(wb)
+
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
+
     return output.getvalue()
 
 
@@ -1082,17 +1420,20 @@ def populate_template(template_bytes: bytes, opendock_records: list[dict], mg_re
 # STREAMLIT APP
 # ============================================================
 
-st.set_page_config(page_title="Dispatch Builder", layout="wide")
+st.set_page_config(
+    page_title="Dispatch Builder",
+    layout="wide"
+)
 
 st.title("Dispatch Builder")
 
 st.write(
     "Upload the Loading Manifest PDF, Shipping Manifest PDF, the dispatch template, "
     "and the Opendock report. The app will match and merge the two manifests, then "
-    "populate the OPENDOCK, MG REPORT, DISPATCH SHEET, and MATCH REPORT tabs."
+    "populate the OPENDOCK, MG REPORT, DISPATCH SHEET, and MATCH REPORT tabs. "
+    "If the Opendock report has multiple appointment dates, the Dispatch Sheet is separated by date."
 )
 
-# ── Section 1: Manifest PDFs ─────────────────────────────────────────────────
 st.subheader("Step 1 — Upload Manifests")
 
 col_left, col_right = st.columns(2)
@@ -1111,7 +1452,6 @@ with col_right:
         key="shipping_manifest"
     )
 
-# ── Section 2: Template + Opendock ───────────────────────────────────────────
 st.subheader("Step 2 — Upload Template & Opendock Report")
 
 col_tmpl, col_od = st.columns(2)
@@ -1130,7 +1470,6 @@ with col_od:
         key="opendock"
     )
 
-# ── Section 3: Extra MG PDFs ─────────────────────────────────────────────────
 st.subheader("Step 3 — (Optional) Additional MG Report PDFs from Past Days")
 
 extra_mg_files = st.file_uploader(
@@ -1142,7 +1481,6 @@ extra_mg_files = st.file_uploader(
 
 st.divider()
 
-# ── Build button ─────────────────────────────────────────────────────────────
 all_required = loading_manifest_file and shipping_manifest_file and template_file and opendock_file
 
 if not all_required:
@@ -1151,15 +1489,15 @@ if not all_required:
 if all_required and st.button("Build Matched PDF + Populated Short Sheet", type="primary"):
 
     try:
-        loading_bytes  = extract_pdf_bytes_from_upload(loading_manifest_file)
+        loading_bytes = extract_pdf_bytes_from_upload(loading_manifest_file)
         shipping_bytes = extract_pdf_bytes_from_upload(shipping_manifest_file)
         template_bytes = template_file.read()
         opendock_bytes = opendock_file.read()
 
-        # ── Step A: Match & merge the two manifest PDFs ───────────────────────
         with st.spinner("Matching and merging manifest PDFs…"):
             matched_pdf_bytes, loading_count, shipping_count, load_count = build_matched_pdf_bytes(
-                loading_bytes, shipping_bytes
+                loading_bytes,
+                shipping_bytes
             )
 
         st.success(
@@ -1167,7 +1505,6 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             f"{shipping_count} shipping loads, {load_count} unique loads."
         )
 
-        # Download button for the matched PDF (always available after build)
         st.download_button(
             label="Download Matched Manifest PDF",
             data=matched_pdf_bytes,
@@ -1175,17 +1512,18 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             mime="application/pdf",
         )
 
-        # ── Step B: Parse matched PDF as the primary MG source ────────────────
         with st.spinner("Reading matched manifest PDF for MG data…"):
-            mg_records, mg_summary = parse_mg_pdf_bytes(matched_pdf_bytes, source_name="Matched_Manifest_Packet.pdf")
+            mg_records, mg_summary = parse_mg_pdf_bytes(
+                matched_pdf_bytes,
+                source_name="Matched_Manifest_Packet.pdf"
+            )
 
-        # Merge in any extra MG PDFs uploaded separately
         if extra_mg_files:
             with st.spinner("Reading extra MG PDFs…"):
                 extra_records, _ = parse_multiple_mg_pdfs(extra_mg_files)
 
-            # Merge: extra records fill gaps; matched PDF wins on conflicts
             existing_loads = {r["load"] for r in mg_records}
+
             for rec in extra_records:
                 if rec["load"] not in existing_loads:
                     mg_records.append(rec)
@@ -1193,18 +1531,17 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             mg_records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
             mg_summary["mg_unique_loads"] = len(mg_records)
 
-        # Step C: Parse Opendock 
         with st.spinner("Reading Opendock report…"):
             opendock_records, opendock_summary = parse_opendock_excel(opendock_bytes)
 
         st.success("All files loaded successfully.")
 
-        # Metrics 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Opendock Outbound Rows",  opendock_summary["outbound_rows_loaded"])
-        c2.metric("Inbound Rows Skipped",    opendock_summary["inbound_rows_skipped"])
-        c3.metric("MG Unique Loads",         mg_summary["mg_unique_loads"])
-        c4.metric("MG Rows Before Dedup",    mg_summary["mg_rows_before_dedup"])
+
+        c1.metric("Opendock Outbound Rows", opendock_summary["outbound_rows_loaded"])
+        c2.metric("Inbound Rows Skipped", opendock_summary["inbound_rows_skipped"])
+        c3.metric("MG Unique Loads", mg_summary["mg_unique_loads"])
+        c4.metric("MG Rows Before Dedup", mg_summary["mg_rows_before_dedup"])
 
         if opendock_summary["duplicate_outbound_loads"]:
             st.warning(
@@ -1218,29 +1555,34 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
                 + ", ".join(mg_summary["duplicate_mg_loads"])
             )
 
-        # ── Step D: Populate template ─────────────────────────────────────────
         with st.spinner("Populating template…"):
-            populated_file = populate_template(template_bytes, opendock_records, mg_records)
+            populated_file = populate_template(
+                template_bytes,
+                opendock_records,
+                mg_records
+            )
 
         st.success("Populated short sheet created successfully.")
 
-        # ── Previews ──────────────────────────────────────────────────────────
         st.subheader("Opendock Outbound Preview")
         st.dataframe(opendock_records, use_container_width=True)
 
         st.subheader("MG Report Preview")
         st.dataframe(mg_records, use_container_width=True)
 
-        missing_customer_records = [r for r in mg_records if not r.get("consignee", "")]
+        missing_customer_records = [
+            r for r in mg_records
+            if not r.get("consignee", "")
+        ]
+
         if missing_customer_records:
             st.warning(f"{len(missing_customer_records)} MG load(s) have no customer/consignee detected.")
             st.dataframe(missing_customer_records, use_container_width=True)
         else:
             st.success("Customer/consignee populated for all MG loads.")
 
-        # ── Final download ────────────────────────────────────────────────────
         st.download_button(
-            label=" Download Populated Dispatch Template",
+            label="Download Populated Dispatch Template",
             data=populated_file,
             file_name=OUTPUT_FILE_NAME,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
