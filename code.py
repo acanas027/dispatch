@@ -1558,7 +1558,7 @@ with col_od:
 st.subheader("Step 3 — Upload MG Report Excel")
 
 mg_report_file = st.file_uploader(
-    "MG Report Excel (.xlsx)",
+    "MG Report Excel (.xlsx or .xls)",
     type=["xlsx"],
     key="mg_report"
 )
