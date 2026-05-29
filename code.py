@@ -9,17 +9,18 @@ from collections import defaultdict
 import streamlit as st
 import fitz  # PyMuPDF
 import openpyxl
+import pandas as pd
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.formula.translate import Translator
 from pypdf import PdfReader, PdfWriter
 
 
-
+# ============================================================
 # SETTINGS
 # ============================================================
 
-OUTPUT_FILE_NAME = "Populated_Dispatch_TEMPLATE.xlsx"
+OUTPUT_FILE_NAME = "Populated_KS_SS_TEMPLATE.xlsx"
 
 DISPATCH_SHEET = "DISPATCH SHEET"
 OPENDOCK_SHEET = "OPENDOCK"
@@ -525,19 +526,33 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
 # MG EXCEL PARSER
 # ============================================================
 
-def parse_mg_report_excel(mg_report_bytes: bytes) -> tuple[list[dict], dict]:
-    wb = openpyxl.load_workbook(io.BytesIO(mg_report_bytes), data_only=True)
-    ws = wb[wb.sheetnames[0]]
+def parse_mg_report_excel(mg_report_bytes: bytes, file_name: str = "") -> tuple[list[dict], dict]:
+    if file_name.lower().endswith(".xls"):
+        df = pd.read_excel(io.BytesIO(mg_report_bytes), engine="xlrd")
+    else:
+        df = pd.read_excel(io.BytesIO(mg_report_bytes), engine="openpyxl")
 
-    headers = get_header_map(ws, 1)
+    df = df.fillna("")
 
-    load_col = find_col(headers, ["Load", "Load #", "Load Number", "Load Reference"])
-    date_col = find_col(headers, ["PU Appt Date", "Appt Date", "Appointment Date", "Date"])
-    time_col = find_col(headers, ["PU Appt Time", "Appt Time", "Appointment Time", "Time"])
-    carrier_col = find_col(headers, ["Carrier", "Carrier Name", "CARR/SCT TR"])
-    weight_col = find_col(headers, ["Weight", "Actual Weight", "Total Weight"])
-    cases_col = find_col(headers, ["Quantity", "Actual Quantity", "Cases", "Case Count", "Total Cases"])
-    customer_col = find_col(headers, ["Consignee", "Customer", "Customer Name", "Ship To", "Destination"])
+    normalized_headers = {
+        normalize_header(col): col
+        for col in df.columns
+    }
+
+    def find_df_col(possible_names):
+        for name in possible_names:
+            key = normalize_header(name)
+            if key in normalized_headers:
+                return normalized_headers[key]
+        return None
+
+    load_col = find_df_col(["Load", "Load #", "Load Number", "Load Reference"])
+    date_col = find_df_col(["PU Appt Date", "Appt Date", "Appointment Date", "Date"])
+    time_col = find_df_col(["PU Appt Time", "Appt Time", "Appointment Time", "Time"])
+    carrier_col = find_df_col(["Carrier", "Carrier Name", "CARR/SCT TR"])
+    weight_col = find_df_col(["Weight", "Actual Weight", "Total Weight"])
+    cases_col = find_df_col(["Quantity", "Actual Quantity", "Cases", "Case Count", "Total Cases"])
+    customer_col = find_df_col(["Consignee", "Customer", "Customer Name", "Ship To", "Destination"])
 
     missing = []
 
@@ -557,21 +572,21 @@ def parse_mg_report_excel(mg_report_bytes: bytes) -> tuple[list[dict], dict]:
     duplicate_mg_loads = []
     records_by_load = {}
 
-    for row in range(2, ws.max_row + 1):
-        load_number = normalize_load_number(ws.cell(row, load_col).value)
+    for _, row in df.iterrows():
+        load_number = normalize_load_number(row.get(load_col, ""))
 
         if not load_number:
             continue
 
         record = {
             "load": load_number,
-            "appt_date": normalize_date(ws.cell(row, date_col).value) if date_col else "",
-            "appt_time": normalize_time(ws.cell(row, time_col).value) if time_col else "",
-            "carrier": clean_spaces(ws.cell(row, carrier_col).value) if carrier_col else "",
-            "actual_weight": parse_number(ws.cell(row, weight_col).value),
-            "actual_quantity": parse_number(ws.cell(row, cases_col).value),
-            "consignee": clean_spaces(ws.cell(row, customer_col).value),
-            "source_file": "MG Report Excel",
+            "appt_date": normalize_date(row.get(date_col, "")) if date_col else "",
+            "appt_time": normalize_time(row.get(time_col, "")) if time_col else "",
+            "carrier": clean_spaces(row.get(carrier_col, "")) if carrier_col else "",
+            "actual_weight": parse_number(row.get(weight_col, 0)),
+            "actual_quantity": parse_number(row.get(cases_col, 0)),
+            "consignee": clean_spaces(row.get(customer_col, "")),
+            "source_file": file_name or "MG Report Excel",
         }
 
         all_records.append(record)
@@ -1559,7 +1574,7 @@ st.subheader("Step 3 — Upload MG Report Excel")
 
 mg_report_file = st.file_uploader(
     "MG Report Excel (.xlsx or .xls)",
-    type=["xlsx"],
+    type=["xlsx", "xls"],
     key="mg_report"
 )
 
@@ -1604,7 +1619,10 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
         )
 
         with st.spinner("Reading MG Report Excel…"):
-            mg_records, mg_summary = parse_mg_report_excel(mg_report_bytes)
+            mg_records, mg_summary = parse_mg_report_excel(
+                mg_report_bytes,
+                mg_report_file.name
+            )
 
         with st.spinner("Reading Opendock report…"):
             opendock_records, opendock_summary = parse_opendock_excel(opendock_bytes)
