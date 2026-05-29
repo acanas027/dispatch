@@ -300,19 +300,6 @@ def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
 
 
 # ============================================================
-# LOAD TYPE CLEANER
-# ============================================================
-
-def clean_load_type(value: str) -> str:
-    """Remove the words 'trailer' and 'load' (case-insensitive) from load type."""
-    if not value:
-        return value
-    cleaned = re.sub(r"\b(trailer|load)\b", "", value, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
-
-
-# ============================================================
 # PDF MANIFEST MATCHER
 # ============================================================
 
@@ -434,46 +421,6 @@ def build_matched_pdf_bytes(loading_bytes, shipping_bytes):
     output.seek(0)
 
     return output.read(), len(loading_groups), len(shipping_groups), len(records)
-
-
-# ============================================================
-# MANIFEST DATE/TIME EXTRACTOR
-# Parses the matched manifest PDF and returns a dict keyed by
-# normalized load number -> {"date": "MM/DD/YYYY", "time": "HH:MM"}
-# ============================================================
-
-def extract_manifest_appt_by_load(matched_pdf_bytes: bytes) -> dict:
-    """
-    Reads the matched manifest PDF and extracts the PU APPT date and time
-    for each load number found. Returns a dict:
-        { normalized_load_number: {"date": "MM/DD/YYYY", "time": "HH:MM"} }
-    """
-    appt_by_load = {}
-    doc = fitz.open(stream=matched_pdf_bytes, filetype="pdf")
-    current_load = None
-
-    for i in range(len(doc)):
-        text = doc[i].get_text("text")
-
-        # Check if this page introduces a new load
-        found_load_raw = parse_load_from_text(text)
-        if found_load_raw:
-            current_load = normalize_load_number(found_load_raw)
-
-        if not current_load:
-            continue
-
-        # Only parse PU APPT if we haven't already found one for this load
-        if current_load not in appt_by_load:
-            dt = parse_pu_appt_from_text(text)
-            if dt:
-                appt_by_load[current_load] = {
-                    "date": dt.strftime("%m/%d/%Y"),
-                    "time": dt.strftime("%H:%M"),
-                }
-
-    doc.close()
-    return appt_by_load
 
 
 # ============================================================
@@ -1243,15 +1190,7 @@ def populate_mg_report_sheet(wb, mg_records):
         ws.cell(index, 4).value = record.get("consignee", "")
 
 
-def populate_dispatch_sheet(wb, opendock_records, mg_records, manifest_appt_by_load=None):
-    """
-    Populates the DISPATCH SHEET.
-
-    manifest_appt_by_load: dict keyed by normalized load number ->
-        {"date": "MM/DD/YYYY", "time": "HH:MM"}
-        If provided, each load's Opendock appt date/time is compared
-        against the matched manifest PU APPT and a note is added on mismatch.
-    """
+def populate_dispatch_sheet(wb, opendock_records, mg_records):
     ws = wb[DISPATCH_SHEET]
 
     notes_col = find_dispatch_notes_col(ws, header_row=2)
@@ -1268,9 +1207,6 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records, manifest_appt_by_l
         for record in mg_records
         if normalize_load_number(record.get("load"))
     }
-
-    if manifest_appt_by_load is None:
-        manifest_appt_by_load = {}
 
     max_row = max(ws.max_row, DISPATCH_START_ROW + MAX_DISPATCH_ROWS)
 
@@ -1355,42 +1291,26 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records, manifest_appt_by_l
             if not matched_mg:
                 notes.append("Not found in MG report")
             else:
+                mg_date = matched_mg.get("appt_date", "")
+                mg_time = matched_mg.get("appt_time", "")
+                od_date = record.get("appt_date", "")
+                od_time = record.get("appt_time", "")
+
+                if mg_date and od_date and mg_date != od_date:
+                    notes.append(f"Date mismatch: MG {mg_date}, Opendock {od_date}")
+
+                if mg_time and od_time and mg_time != od_time:
+                    notes.append(f"Time mismatch: MG {mg_time}, Opendock {od_time}")
+
                 if not matched_mg.get("consignee", ""):
                     notes.append("MG customer/consignee not found")
 
-            # ── Manifest vs Opendock date/time mismatch check ──────────────
-            manifest_appt = manifest_appt_by_load.get(load_number)
-            od_date = record.get("appt_date", "")
-            od_time = record.get("appt_time", "")
-
-            if manifest_appt:
-                mf_date = manifest_appt.get("date", "")
-                mf_time = manifest_appt.get("time", "")
-
-                if mf_date and od_date and mf_date != od_date:
-                    notes.append(
-                        f"Date mismatch: Manifest {mf_date}, Opendock {od_date}"
-                    )
-
-                if mf_time and od_time and mf_time != od_time:
-                    notes.append(
-                        f"Time mismatch: Manifest {mf_time}, Opendock {od_time}"
-                    )
-            else:
-                # Load not found in manifest at all
-                notes.append("Load not found in matched manifest")
-            # ───────────────────────────────────────────────────────────────
-
             row_num = current_row
 
-            # Clean load type: strip the words "trailer" and "load"
-            raw_load_type = record.get("load_type", "")
-            cleaned_load_type = clean_load_type(raw_load_type)
-
             ws.cell(row_num, 2).value = load_number
-            ws.cell(row_num, 4).value = od_time
+            ws.cell(row_num, 4).value = record.get("appt_time", "")
             ws.cell(row_num, 5).value = record.get("carrier", "")
-            ws.cell(row_num, 7).value = cleaned_load_type
+            ws.cell(row_num, 7).value = record.get("load_type", "")
             ws.cell(row_num, notes_col).value = " | ".join(notes)
 
             ws.cell(row_num, 3).value = f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
@@ -1421,7 +1341,7 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records, manifest_appt_by_l
         ws["C1"] = ""
 
 
-def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_load=None):
+def add_match_report_sheet(wb, opendock_records, mg_records):
     sheet_name = "MATCH REPORT"
 
     if sheet_name in wb.sheetnames:
@@ -1429,15 +1349,10 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
 
     ws = wb.create_sheet(sheet_name)
 
-    if manifest_appt_by_load is None:
-        manifest_appt_by_load = {}
-
     headers = [
         "Load",
         "Opendock Date",
         "Opendock Time",
-        "Manifest Date",
-        "Manifest Time",
         "MG Date",
         "MG Time",
         "Opendock Carrier",
@@ -1464,10 +1379,6 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
         load_number = record.get("load", "")
         opendock_loads.add(load_number)
         mg = mg_by_load.get(load_number)
-        manifest_appt = manifest_appt_by_load.get(load_number, {})
-
-        mf_date = manifest_appt.get("date", "")
-        mf_time = manifest_appt.get("time", "")
 
         if not mg:
             status = "Missing in MG report"
@@ -1489,18 +1400,11 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
 
             status_parts = []
 
-            # Compare manifest vs opendock (primary mismatch check)
-            od_date = record.get("appt_date", "")
-            od_time = record.get("appt_time", "")
+            if mg_date and record.get("appt_date") and mg_date != record.get("appt_date"):
+                status_parts.append("Date mismatch")
 
-            if mf_date and od_date and mf_date != od_date:
-                status_parts.append(f"Date mismatch: Manifest {mf_date} vs Opendock {od_date}")
-
-            if mf_time and od_time and mf_time != od_time:
-                status_parts.append(f"Time mismatch: Manifest {mf_time} vs Opendock {od_time}")
-
-            if not mf_date and not mf_time:
-                status_parts.append("Load not found in manifest")
+            if mg_time and record.get("appt_time") and mg_time != record.get("appt_time"):
+                status_parts.append("Time mismatch")
 
             if not consignee:
                 status_parts.append("Customer missing from MG")
@@ -1514,8 +1418,6 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
             load_number,
             record.get("appt_date", ""),
             record.get("appt_time", ""),
-            mf_date,
-            mf_time,
             mg_date,
             mg_time,
             record.get("carrier", ""),
@@ -1530,13 +1432,10 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
 
     for mg_load, mg in mg_by_load.items():
         if mg_load not in opendock_loads:
-            manifest_appt = manifest_appt_by_load.get(mg_load, {})
             ws.append([
                 mg_load,
                 "",
                 "",
-                manifest_appt.get("date", ""),
-                manifest_appt.get("time", ""),
                 mg.get("appt_date", ""),
                 mg.get("appt_time", ""),
                 "",
@@ -1560,9 +1459,9 @@ def add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_lo
     for column in range(1, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(column)].width = 20
 
-    ws.column_dimensions["K"].width = 55
-    ws.column_dimensions["N"].width = 35
-    ws.column_dimensions["O"].width = 35
+    ws.column_dimensions["I"].width = 55
+    ws.column_dimensions["L"].width = 35
+    ws.column_dimensions["M"].width = 35
 
     ws.freeze_panes = "A2"
 
@@ -1600,19 +1499,14 @@ def format_output_workbook(wb):
             pass
 
 
-def populate_template(
-    template_bytes: bytes,
-    opendock_records: list[dict],
-    mg_records: list[dict],
-    manifest_appt_by_load: dict = None,
-) -> bytes:
+def populate_template(template_bytes: bytes, opendock_records: list[dict], mg_records: list[dict]) -> bytes:
     wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
 
     validate_template(wb)
     populate_opendock_sheet(wb, opendock_records)
     populate_mg_report_sheet(wb, mg_records)
-    populate_dispatch_sheet(wb, opendock_records, mg_records, manifest_appt_by_load)
-    add_match_report_sheet(wb, opendock_records, mg_records, manifest_appt_by_load)
+    populate_dispatch_sheet(wb, opendock_records, mg_records)
+    add_match_report_sheet(wb, opendock_records, mg_records)
     format_output_workbook(wb)
 
     output = io.BytesIO()
@@ -1717,21 +1611,11 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             f"{shipping_count} shipping loads, {load_count} unique loads."
         )
 
-        # ── Download matched manifest — always visible after build ──────────
         st.download_button(
-            label="⬇️ Download Matched Manifest PDF",
+            label="Download Matched Manifest PDF",
             data=matched_pdf_bytes,
             file_name="Matched_Manifest_Packet.pdf",
             mime="application/pdf",
-            key="download_matched_pdf",
-        )
-        # ───────────────────────────────────────────────────────────────────
-
-        with st.spinner("Extracting PU APPT dates/times from matched manifest…"):
-            manifest_appt_by_load = extract_manifest_appt_by_load(matched_pdf_bytes)
-
-        st.info(
-            f"Manifest PU APPT extracted for {len(manifest_appt_by_load)} load(s)."
         )
 
         with st.spinner("Reading MG Report Excel…"):
@@ -1768,8 +1652,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             populated_file = populate_template(
                 template_bytes,
                 opendock_records,
-                mg_records,
-                manifest_appt_by_load,
+                mg_records
             )
 
         st.success("Populated short sheet created successfully.")
@@ -1792,12 +1675,28 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             st.success("Customer/consignee populated for all MG loads.")
 
         st.download_button(
-            label="⬇️ Download Populated Dispatch Template",
+            label="Download Populated Dispatch Template",
             data=populated_file,
             file_name=OUTPUT_FILE_NAME,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    # ── Download matched manifest — always visible after build ──────────
+
+        st.download_button(
+
+            label=" Download Matched Manifest PDF",
+
+            data=matched_pdf_bytes,
+
+            file_name="Matched_Manifest_Packet.pdf",
+
+            mime="application/pdf",
+
+            key="download_matched_pdf",
+
+        )
+    
     except Exception as e:
         st.error("Something went wrong.")
         st.exception(e)
