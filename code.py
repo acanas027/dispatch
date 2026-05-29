@@ -15,11 +15,11 @@ from openpyxl.formula.translate import Translator
 from pypdf import PdfReader, PdfWriter
 
 
-# ============================================================
+
 # SETTINGS
 # ============================================================
 
-OUTPUT_FILE_NAME = "Populated_KS_SS_TEMPLATE.xlsx"
+OUTPUT_FILE_NAME = "Populated_Dispatch_TEMPLATE.xlsx"
 
 DISPATCH_SHEET = "DISPATCH SHEET"
 OPENDOCK_SHEET = "OPENDOCK"
