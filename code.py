@@ -552,7 +552,7 @@ def parse_mg_report_excel(mg_report_bytes: bytes, file_name: str = "") -> tuple[
     carrier_col = find_df_col(["Carrier", "Carrier Name", "CARR/SCT TR"])
     weight_col = find_df_col(["Weight", "Actual Weight", "Total Weight"])
     cases_col = find_df_col(["Quantity", "Actual Quantity", "Cases", "Case Count", "Total Cases"])
-    customer_col = find_df_col(["Consignee", "Customer", "Customer Name", "Ship To", "Destination"])
+    customer_col = find_df_col(["Consignee Name", "Customer", "Customer Name", "Ship To", "Destination"])
 
     missing = []
 
