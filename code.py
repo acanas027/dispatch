@@ -265,12 +265,6 @@ def write_day_header(ws, row, date_text, load_count, total_cases, max_col):
 
 
 def extract_pdf_bytes_from_upload(uploaded_file) -> bytes:
-    """
-    Accepts a Streamlit UploadedFile that is either a .pdf or a .zip.
-    - If PDF: returns its bytes directly.
-    - If ZIP: extracts all PDFs inside, merges them in filename order,
-      and returns the combined bytes. Raises if no PDF is found.
-    """
     raw = uploaded_file.read()
 
     if uploaded_file.name.lower().endswith(".pdf"):
@@ -528,7 +522,98 @@ def parse_opendock_excel(opendock_bytes: bytes) -> tuple[list[dict], dict]:
 
 
 # ============================================================
-# MG PDF PARSER
+# MG EXCEL PARSER
+# ============================================================
+
+def parse_mg_report_excel(mg_report_bytes: bytes) -> tuple[list[dict], dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(mg_report_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+
+    headers = get_header_map(ws, 1)
+
+    load_col = find_col(headers, ["Load", "Load #", "Load Number", "Load Reference"])
+    date_col = find_col(headers, ["PU Appt Date", "Appt Date", "Appointment Date", "Date"])
+    time_col = find_col(headers, ["PU Appt Time", "Appt Time", "Appointment Time", "Time"])
+    carrier_col = find_col(headers, ["Carrier", "Carrier Name", "CARR/SCT TR"])
+    weight_col = find_col(headers, ["Weight", "Actual Weight", "Total Weight"])
+    cases_col = find_col(headers, ["Quantity", "Actual Quantity", "Cases", "Case Count", "Total Cases"])
+    customer_col = find_col(headers, ["Consignee", "Customer", "Customer Name", "Ship To", "Destination"])
+
+    missing = []
+
+    if not load_col:
+        missing.append("Load")
+    if not weight_col:
+        missing.append("Weight")
+    if not cases_col:
+        missing.append("Quantity / Cases")
+    if not customer_col:
+        missing.append("Customer / Consignee")
+
+    if missing:
+        raise ValueError("The MG report Excel is missing these columns: " + ", ".join(missing))
+
+    all_records = []
+    duplicate_mg_loads = []
+    records_by_load = {}
+
+    for row in range(2, ws.max_row + 1):
+        load_number = normalize_load_number(ws.cell(row, load_col).value)
+
+        if not load_number:
+            continue
+
+        record = {
+            "load": load_number,
+            "appt_date": normalize_date(ws.cell(row, date_col).value) if date_col else "",
+            "appt_time": normalize_time(ws.cell(row, time_col).value) if time_col else "",
+            "carrier": clean_spaces(ws.cell(row, carrier_col).value) if carrier_col else "",
+            "actual_weight": parse_number(ws.cell(row, weight_col).value),
+            "actual_quantity": parse_number(ws.cell(row, cases_col).value),
+            "consignee": clean_spaces(ws.cell(row, customer_col).value),
+            "source_file": "MG Report Excel",
+        }
+
+        all_records.append(record)
+
+        if load_number not in records_by_load:
+            records_by_load[load_number] = record
+        else:
+            duplicate_mg_loads.append(load_number)
+
+            existing = records_by_load[load_number]
+
+            existing_score = (
+                bool(existing.get("consignee")) +
+                bool(existing.get("appt_date")) +
+                bool(existing.get("appt_time")) +
+                bool(existing.get("actual_quantity"))
+            )
+
+            new_score = (
+                bool(record.get("consignee")) +
+                bool(record.get("appt_date")) +
+                bool(record.get("appt_time")) +
+                bool(record.get("actual_quantity"))
+            )
+
+            if new_score > existing_score:
+                records_by_load[load_number] = record
+
+    final_records = list(records_by_load.values())
+    final_records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
+
+    summary = {
+        "mg_rows_before_dedup": len(all_records),
+        "mg_unique_loads": len(final_records),
+        "duplicate_mg_loads": sorted(set(duplicate_mg_loads)),
+    }
+
+    return final_records, summary
+
+
+# ============================================================
+# OLD MG PDF PARSER KEPT IN CODE, BUT NO LONGER USED FOR MG DATA
 # ============================================================
 
 def extract_pdf_pages(pdf_bytes: bytes) -> list[str]:
@@ -1429,8 +1514,8 @@ st.title("Dispatch Builder")
 
 st.write(
     "Upload the Loading Manifest PDF, Shipping Manifest PDF, the dispatch template, "
-    "and the Opendock report. The app will match and merge the two manifests, then "
-    "populate the OPENDOCK, MG REPORT, DISPATCH SHEET, and MATCH REPORT tabs. "
+    "the Opendock report, and the MG Report Excel. The app will match and merge the two manifests, "
+    "then populate the OPENDOCK, MG REPORT, DISPATCH SHEET, and MATCH REPORT tabs. "
     "If the Opendock report has multiple appointment dates, the Dispatch Sheet is separated by date."
 )
 
@@ -1470,21 +1555,26 @@ with col_od:
         key="opendock"
     )
 
-st.subheader("Step 3 — (Optional) Additional MG Report PDFs from Past Days")
+st.subheader("Step 3 — Upload MG Report Excel")
 
-extra_mg_files = st.file_uploader(
-    "Upload any extra MG report PDFs (optional)",
-    type=["pdf"],
-    accept_multiple_files=True,
-    key="extra_mg"
+mg_report_file = st.file_uploader(
+    "MG Report Excel (.xlsx)",
+    type=["xlsx"],
+    key="mg_report"
 )
 
 st.divider()
 
-all_required = loading_manifest_file and shipping_manifest_file and template_file and opendock_file
+all_required = (
+    loading_manifest_file
+    and shipping_manifest_file
+    and template_file
+    and opendock_file
+    and mg_report_file
+)
 
 if not all_required:
-    st.info("Upload the Loading Manifest, Shipping Manifest, Template, and Opendock report to continue.")
+    st.info("Upload the Loading Manifest, Shipping Manifest, Template, Opendock report, and MG Report Excel to continue.")
 
 if all_required and st.button("Build Matched PDF + Populated Short Sheet", type="primary"):
 
@@ -1493,6 +1583,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
         shipping_bytes = extract_pdf_bytes_from_upload(shipping_manifest_file)
         template_bytes = template_file.read()
         opendock_bytes = opendock_file.read()
+        mg_report_bytes = mg_report_file.read()
 
         with st.spinner("Matching and merging manifest PDFs…"):
             matched_pdf_bytes, loading_count, shipping_count, load_count = build_matched_pdf_bytes(
@@ -1512,24 +1603,8 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             mime="application/pdf",
         )
 
-        with st.spinner("Reading matched manifest PDF for MG data…"):
-            mg_records, mg_summary = parse_mg_pdf_bytes(
-                matched_pdf_bytes,
-                source_name="Matched_Manifest_Packet.pdf"
-            )
-
-        if extra_mg_files:
-            with st.spinner("Reading extra MG PDFs…"):
-                extra_records, _ = parse_multiple_mg_pdfs(extra_mg_files)
-
-            existing_loads = {r["load"] for r in mg_records}
-
-            for rec in extra_records:
-                if rec["load"] not in existing_loads:
-                    mg_records.append(rec)
-
-            mg_records.sort(key=lambda x: (sort_datetime_key(x), x.get("load", "")))
-            mg_summary["mg_unique_loads"] = len(mg_records)
+        with st.spinner("Reading MG Report Excel…"):
+            mg_records, mg_summary = parse_mg_report_excel(mg_report_bytes)
 
         with st.spinner("Reading Opendock report…"):
             opendock_records, opendock_summary = parse_opendock_excel(opendock_bytes)
@@ -1551,7 +1626,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
 
         if mg_summary["duplicate_mg_loads"]:
             st.warning(
-                "Duplicate loads found across MG PDFs — kept the most complete version: "
+                "Duplicate loads found in MG Report Excel — kept the most complete version: "
                 + ", ".join(mg_summary["duplicate_mg_loads"])
             )
 
