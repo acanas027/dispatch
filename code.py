@@ -51,6 +51,14 @@ def clean_spaces(value) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def clean_load_type(value) -> str:
+    text = clean_spaces(value)
+
+    text = re.sub(r"\bTRAILER\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bLOAD\b", "", text, flags=re.IGNORECASE)
+
+    return clean_spaces(text)
+
 def normalize_header(value) -> str:
     if value is None:
         return ""
@@ -1310,7 +1318,7 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records):
             ws.cell(row_num, 2).value = load_number
             ws.cell(row_num, 4).value = record.get("appt_time", "")
             ws.cell(row_num, 5).value = record.get("carrier", "")
-            ws.cell(row_num, 7).value = record.get("load_type", "")
+            ws.cell(row_num, 7).value = clean_load_type(record.get("load_type", ""))
             ws.cell(row_num, notes_col).value = " | ".join(notes)
 
             ws.cell(row_num, 3).value = f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
