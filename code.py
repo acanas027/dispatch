@@ -42,6 +42,44 @@ MAX_MG_REPORT_ROWS = 1000
 
 
 # ============================================================
+# DISPATCH SHEET COLUMN MAP (updated for Dispatch_Template_1.xlsx)
+# ------------------------------------------------------------
+# B (2)  LOAD#         <- load number (written directly)
+# C (3)  CUSTOMER      <- VLOOKUP MG REPORT col 4 (consignee)
+# D (4)  CARRIER       <- VLOOKUP carrier-full (E) -> CARRIERS col 2
+# E (5)  CARRIER FULL  <- carrier full name (written directly) [hidden]
+# F (6)  TYPE          <- cleaned load type (written directly)
+# G (7)  TIME          <- appointment time (written directly)
+# H (8)  (blank)       [hidden]
+# I (9)  TT4           <- SEARCH formula on CUSTOMER (C)
+# J (10) WEIGHT        <- VLOOKUP MG REPORT col 2 [hidden]
+# K (11) CASES         <- VLOOKUP MG REPORT col 3 [hidden]
+# L (12) PULLS         <- template formula (references CASES K)
+# M (13) PICKS         <- template formula (references CASES K)
+# N (14) NOTES         <- match notes (written directly)
+# ============================================================
+
+DISPATCH_COL_LOAD = 2
+DISPATCH_COL_CUSTOMER = 3
+DISPATCH_COL_CARRIER = 4
+DISPATCH_COL_CARRIER_FULL = 5
+DISPATCH_COL_TYPE = 6
+DISPATCH_COL_TIME = 7
+DISPATCH_COL_TT4 = 9
+DISPATCH_COL_WEIGHT = 10
+DISPATCH_COL_CASES = 11
+DISPATCH_COL_PULLS = 12
+DISPATCH_COL_PICKS = 13
+DISPATCH_COL_NOTES = 14
+
+DISPATCH_MAX_COL = 14
+
+# Row 1 summary cells
+DISPATCH_COUNT_CELL = "L1"   # load count (was G1 in the old template)
+DISPATCH_DATE_CELL = "C1"    # date value next to the "Date:" label in B1
+
+
+# ============================================================
 # BASIC HELPERS
 # ============================================================
 
@@ -174,7 +212,7 @@ def find_dispatch_notes_col(ws, header_row=2):
         value = ws.cell(header_row, col).value
         if normalize_header(value) in ["NOTES", "NOTE"]:
             return col
-    return 13
+    return DISPATCH_COL_NOTES
 
 
 def copy_cell_style(source_cell, target_cell):
@@ -1202,7 +1240,7 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records):
     ws = wb[DISPATCH_SHEET]
 
     notes_col = find_dispatch_notes_col(ws, header_row=2)
-    max_output_col = max(13, notes_col)
+    max_output_col = max(DISPATCH_MAX_COL, notes_col)
 
     row_template = capture_row_template(
         ws,
@@ -1315,38 +1353,54 @@ def populate_dispatch_sheet(wb, opendock_records, mg_records):
 
             row_num = current_row
 
-            ws.cell(row_num, 2).value = load_number
-            ws.cell(row_num, 4).value = record.get("appt_time", "")
-            ws.cell(row_num, 5).value = record.get("carrier", "")
-            ws.cell(row_num, 7).value = clean_load_type(record.get("load_type", ""))
+            # --- Directly written values ---
+            ws.cell(row_num, DISPATCH_COL_LOAD).value = load_number
+            ws.cell(row_num, DISPATCH_COL_TIME).value = record.get("appt_time", "")
+            ws.cell(row_num, DISPATCH_COL_CARRIER_FULL).value = record.get("carrier", "")
+            ws.cell(row_num, DISPATCH_COL_TYPE).value = clean_load_type(record.get("load_type", ""))
             ws.cell(row_num, notes_col).value = " | ".join(notes)
 
-            ws.cell(row_num, 3).value = f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
-            ws.cell(row_num, 6).value = f'=IFERROR(VLOOKUP(E{row_num},CARRIERS!$A:$B,2,FALSE),"")'
-            ws.cell(row_num, 8).value = (
+            # --- Formula-driven cells (column letters match new layout) ---
+            # CUSTOMER (C): consignee from MG REPORT col 4
+            ws.cell(row_num, DISPATCH_COL_CUSTOMER).value = (
+                f'=IFERROR(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,4,FALSE),"")'
+            )
+            # CARRIER (D): short code from CARRIERS based on CARRIER FULL (E)
+            ws.cell(row_num, DISPATCH_COL_CARRIER).value = (
+                f'=IFERROR(VLOOKUP(E{row_num},CARRIERS!$A:$B,2,FALSE),"")'
+            )
+            # TT4 (I): flag based on CUSTOMER (C)
+            ws.cell(row_num, DISPATCH_COL_TT4).value = (
                 f'=IF(OR(ISNUMBER(SEARCH("albertson",C{row_num})),'
                 f'ISNUMBER(SEARCH("jewel",C{row_num})),'
                 f'ISNUMBER(SEARCH("safeway",C{row_num})),'
                 f'ISNUMBER(SEARCH("sysco",C{row_num})),'
                 f'ISNUMBER(SEARCH("united supermarkets",C{row_num}))),"X","")'
             )
-            ws.cell(row_num, 9).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,2,FALSE)),0)'
-            ws.cell(row_num, 10).value = f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,3,FALSE)),0)'
+            # WEIGHT (J): MG REPORT col 2
+            ws.cell(row_num, DISPATCH_COL_WEIGHT).value = (
+                f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,2,FALSE)),0)'
+            )
+            # CASES (K): MG REPORT col 3
+            ws.cell(row_num, DISPATCH_COL_CASES).value = (
+                f'=IFERROR(VALUE(VLOOKUP(B{row_num},\'MG REPORT\'!$A$2:$D$1001,3,FALSE)),0)'
+            )
 
-            ws.cell(row_num, 11).number_format = "0"
-            ws.cell(row_num, 12).number_format = "0"
+            # PULLS (L) and PICKS (M) keep their template formulas; just fix number format
+            ws.cell(row_num, DISPATCH_COL_PULLS).number_format = "0"
+            ws.cell(row_num, DISPATCH_COL_PICKS).number_format = "0"
 
             loads_written += 1
             current_row += 1
 
-    ws["G1"] = loads_written
+    ws[DISPATCH_COUNT_CELL] = loads_written
 
     if len(grouped_by_date) == 1:
-        ws["C1"] = grouped_by_date[0]["date"]
+        ws[DISPATCH_DATE_CELL] = grouped_by_date[0]["date"]
     elif len(grouped_by_date) > 1:
-        ws["C1"] = "Multiple Dates"
+        ws[DISPATCH_DATE_CELL] = "Multiple Dates"
     else:
-        ws["C1"] = ""
+        ws[DISPATCH_DATE_CELL] = ""
 
 
 def add_match_report_sheet(wb, opendock_records, mg_records):
@@ -1485,9 +1539,13 @@ def format_output_workbook(wb):
             letter = get_column_letter(col)
 
             if sheet_name == DISPATCH_SHEET:
-                if letter in ["C", "E"]:
+                # Do not touch hidden columns (E, H, J, K) so they stay hidden/sized.
+                if ws.column_dimensions[letter].hidden:
+                    continue
+
+                if letter == "C":            # CUSTOMER
                     ws.column_dimensions[letter].width = 32
-                elif letter == "M":
+                elif letter == "N":          # NOTES
                     ws.column_dimensions[letter].width = 50
                 else:
                     ws.column_dimensions[letter].width = 14
@@ -1704,7 +1762,7 @@ if all_required and st.button("Build Matched PDF + Populated Short Sheet", type=
             key="download_matched_pdf",
 
         )
-    
+
     except Exception as e:
         st.error("Something went wrong.")
         st.exception(e)
